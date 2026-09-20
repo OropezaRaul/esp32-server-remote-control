@@ -24,16 +24,22 @@ SOFTWARE.
 Third-Party Licenses and Acknowledgments
 ==============================================================================
 
-This project incorporates and builds upon the following open-source components:
+This project incorporates, builds upon, and was inspired by the following
+open-source projects and authors:
 
-1. MicroLink v2 (ESP32 Tailscale Client)
+1. ESP32-Tailscale-WoL
+   Copyright (c) 2024 Samir Makwana (https://github.com/samirmakwana/ESP32-Tailscale-WoL)
+   Initial project scaffold and inspiration for integrating Wake-on-LAN with
+   Tailscale on ESP-IDF.
+
+2. MicroLink v2 (ESP32 Tailscale Client)
    Copyright (c) 2025-2026 Cameron Malone (https://github.com/CamM2325/microlink)
    License: MIT License
 
-2. WireGuard for lwIP
+3. WireGuard for lwIP
    Copyright (c) 2021 Daniel Hope (https://www.floorsense.nz)
    License: BSD 3-Clause License
    WireGuard is a registered trademark of Jason A. Donenfeld.
 
-3. X25519 Elliptic Curve Implementation
+4. X25519 Elliptic Curve Implementation
    Derived from public domain code by Daniel J. Bernstein.

@@ -407,6 +407,12 @@ End of README.txt
 This project was built upon the pioneering work of open-source developers who
 first made WireGuard and Tailscale possible on microcontrollers:
 
+- Samir Makwana (@samirmakwana):
+  Creator of ESP32-Tailscale-WoL (https://github.com/samirmakwana/ESP32-Tailscale-WoL).
+  This repository provided the initial project scaffold and inspiration when
+  migrating the firmware from Arduino to ESP-IDF, demonstrating the baseline
+  concept of triggering Wake-on-LAN over a Tailscale connection on ESP32.
+
 - Cameron Malone (@CamM2325):
   Creator of MicroLink (https://github.com/CamM2325/microlink), one of the
   very few implementations of the Tailscale coordination protocol (ts2021)
