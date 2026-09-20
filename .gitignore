@@ -1,0 +1,51 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.credentials
+dependencies.lock
+managed_components/
+package-lock.json
+*.bin
+*.elf
+*.map
+*.hex
+
+# Toolchain / IDF paths (in case accidentally in-tree)
+.toolchain-versions
+
+# Secrets & Private Docs — NEVER commit to public
+credentials.h
+secrets.h
+sdkconfig.credentials
+*.env
+.env
+*.key
+STATUS.md
+RED_ENLACES.md
+docs/
+
+# Existing Arduino-build leftovers (transitional)
+.pio/
+C:\tmp\esp32-build-*/*.bin
+
+# IDE
+.vscode/
+.idea/
+*.bak
+*.swp
+*.tmp
+*.orig
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# ESP-IDF helper scripts (transient build artifacts)
+_idf.cmake
+
+# Vendored upstream components — exclude any nested .git/ directories that
+# might be present from a `git clone` (we vendor the contents directly now,
+# not as submodules).
+components/*/.git/
+components/*/**/.git/

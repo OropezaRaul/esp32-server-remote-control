@@ -1,0 +1,388 @@
+menu "ESP32 Remote Control"
+
+    menu "WiFi Configuration"
+        config WIFI_SSID
+            string "WiFi SSID"
+            default ""
+            help
+                WiFi network name (2.4GHz).
+
+        config WIFI_PASSWORD
+            string "WiFi password"
+            default ""
+            help
+                WiFi password.
+
+        config WIFI_CONNECT_TIMEOUT_MS
+            int "WiFi connect timeout (ms)"
+            default 30000
+            help
+                Max time to wait for WiFi connection before retrying.
+    endmenu
+
+    menu "Tailscale Configuration"
+        config TAILSCALE_AUTH_KEY
+            string "Tailscale auth key"
+            default ""
+            help
+                Reusable auth key from https://login.tailscale.com/admin/settings/keys.
+
+        config TAILSCALE_DEVICE_NAME
+            string "Tailscale device name"
+            default "esp32-server-ctrl"
+            help
+                Hostname visible on your Tailscale network.
+
+        config TAILSCALE_ENABLED
+            bool "Enable Tailscale (MicroLink)"
+            default n
+            help
+                Disable for first-time bring-up without Tailscale (LAN-only mode).
+
+        config TAILSCALE_FUNNEL_ENABLED
+            bool "Advertise ESP32 as Tailscale Funnel endpoint"
+            default n
+            depends on TAILSCALE_ENABLED
+            help
+                When enabled, the ESP32 sends Hostinfo.IngressEnabled=true in its
+                MapRequest, telling the Tailscale control plane that this node
+                can host public Funnel traffic. The Tailscale edge then terminates
+                TLS and forwards plain HTTP packets to the ESP32's :443 listener
+                (microLink handles the WireGuard path; ESP32's web server already
+                runs on :443 from Sesión A).
+                Requires the tailnet to have HTTPS and Funnel enabled
+                (https://login.tailscale.com/admin/acls/funnel). The public
+                hostname is determined by TAILSCALE_DEVICE_NAME, e.g.
+                "https://<device_name>.<tailnet>.ts.net/".
+
+        config TAILSCALE_PEERAPI_PORT
+            int "PeerAPI listener port (announced via Hostinfo.Services)"
+            default 51902
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                TCP port of the MicroLink PeerAPI listener, announced to the
+                control plane via Hostinfo.Services as {"Proto":"peerapi4"}.
+                tailscaled always advertises its PeerAPI port when Funnel is
+                on; session 16 showed IngressEnabled alone was not enough to
+                get the "funnel" nodecap granted, so we mirror the full
+                signal set. The listener (ml_peerapi.c) accepts connections
+                only from tailnet sources (100.64.0.0/10) over WireGuard.
+                Must not collide with 80, 443, 8080, 8443, 9999.
+
+        config ML_ACME_ENABLED
+            bool "Obtain Let's Encrypt cert via ACME (DNS-01)"
+            default n
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                Runs an ACME client (RFC 8555) after Tailscale connects, issuing
+                a cert for <node>.<tailnet>.ts.net with a DNS-01 challenge
+                published via POST /machine/set-dns over the Noise channel.
+                On success the cert is stored in NVS (ml_cert) and the funnel
+                TLS server reloads automatically. Start with the staging
+                directory, switch to production once validated.
+
+        config ML_ACME_DIRECTORY_URL
+            string "ACME directory URL"
+            default "https://acme-v02.api.letsencrypt.org/directory"
+            depends on ML_ACME_ENABLED
+            help
+                Let's Encrypt staging for testing; production is
+                https://acme-v02.api.letsencrypt.org/directory
+
+        config ML_ACME_CONTACT_EMAIL
+            string "ACME account contact email"
+            default ""
+            depends on ML_ACME_ENABLED
+            help
+                Optional but recommended (expiry notices). Must be a real
+                domain or Let's Encrypt rejects newAccount (invalidContact).
+                Empty omits the contact field entirely.
+    endmenu
+
+    menu "Tailscale Recovery Watchdog"
+        config MICROLINK_WATCHDOG_ENABLED
+            bool "Enable Tailscale connection watchdog"
+            default y
+            depends on TAILSCALE_ENABLED
+            help
+                Task periodica que vigila la sesion MicroLink. Si la
+                conexion lleva demasiado tiempo caida, notifica a
+                Telegram y llama a esp_restart() para reiniciar el ESP32
+                completo (WiFi stack + MicroLink + todas las tasks) con
+                un estado limpio.
+
+                Esto es deliberadamente simple: no hace recovery
+                incremental tipo rebind/restart del stack Tailscale
+                porque microlink_stop+start tenia un bug que dejaba
+                la sesion colgada en WIFI_WAIT. El reboot completo es
+                la unica accion garantizada para recuperar la conexion.
+
+        config MICROLINK_WATCHDOG_CHECK_INTERVAL_S
+            int "Check interval (seconds)"
+            default 30
+            range 5 300
+            depends on MICROLINK_WATCHDOG_ENABLED
+            help
+                Cada cuanto el watchdog evalua el estado. 30s da una
+                resolucion de ~30s y costo despreciable (lectura volatil).
+
+        config MICROLINK_WATCHDOG_REBOOT_AFTER_S
+            int "Reboot threshold — seconds without CONNECTED"
+            default 300
+            range 60 7200
+            depends on MICROLINK_WATCHDOG_ENABLED
+            help
+                Tras este tiempo sin evidencia real de vida de la tailnet
+                (CONNECTED con bytes recibidos del control plane, o ultimo
+                CONNECTED observado), el watchdog notifica Telegram y llama
+                a esp_restart(). Default 300s da margen suficiente para
+                re-registros lentos de Tailscale en wifi inestable. Aumentar
+                si la red local es muy lenta.
+
+        config MICROLINK_WATCHDOG_REBIND_AFTER_S
+            int "Soft recovery threshold — rebind Tailscale session (seconds)"
+            default 150
+            range 30 7200
+            depends on MICROLINK_WATCHDOG_ENABLED
+            help
+                Tras este tiempo sin vida de la tailnet, el watchdog intenta
+                primero un RECOVERY SUAVE: microlink_rebind() reabre la
+                sesion Tailscale (sockets del control plane, DERP y DISCO)
+                conservando claves, peers y VPN IP. Es el "reiniciar el
+                servicio" sin reiniciar el ESP32. Se intenta UNA vez por
+                episodio de desconexion. Si aun asi la sesion no vuelve
+                antes de REBOOT_AFTER_S, se rebotea el ESP32 completo.
+                Default 150s < REBOOT_AFTER_S (300s) deja `reboot` como
+                ultima linea de defensa.
+    endmenu
+
+    menu "Telegram Configuration"
+        config TELEGRAM_BOT_TOKEN
+            string "Telegram bot token"
+            default ""
+            help
+                Bot token from @BotFather.
+
+        config TELEGRAM_AUTHORIZED_IDS
+            string "Authorized Telegram chat IDs (comma-separated)"
+            default ""
+            help
+                Comma-separated list of chat IDs allowed to control this device.
+                Example: "111111,222222"
+
+        config TELEGRAM_POLL_TIMEOUT_S
+            int "Long-poll timeout (seconds)"
+            default 20
+            help
+                Long-poll timeout for getUpdates. 20s matches Telegram default.
+    endmenu
+
+    menu "Target Server Configuration"
+        config COCOPA01_IP
+            string "Target Server LAN IP"
+            default "192.168.1.100"
+
+        config COCOPA01_TS_IP
+            string "Target Server Tailscale IP"
+            default "100.64.0.2"
+            help
+                Tailscale IP of the target server. Used by the HTTP proxy to
+                issue a 302 redirect from the ESP32 URL to the server URL.
+
+        config COCOPA01_HTTP_PORT
+            int "Target Server HTTP daemon port"
+            default 9999
+
+        config COCOPA01_MONITOR_PORT
+            int "Target Server monitor HTTP port"
+            default 8085
+            help
+                Port where the monitor HTTP server is listening on the server.
+
+        config COCOPA01_SSH_PORT
+            int "Target Server SSH port"
+            default 22
+
+        config COCOPA01_SHUTDOWN_SECRET
+            string "Shutdown endpoint shared secret"
+            default ""
+            help
+                Must match the shared secret on the target server.
+
+        config COCOPA01_MAC_HEX
+            string "Target Server MAC address (for Wake-on-LAN)"
+            default "00:11:22:33:44:55"
+
+        config COCOPA01_WOL_PORT
+            int "WOL UDP port"
+            default 9
+
+        config COCOPA01_BROADCAST_IP
+            string "WOL broadcast IP"
+            default "192.168.1.255"
+
+        config COCOPA01_POLL_INTERVAL_S
+            int "State polling interval (seconds)"
+            default 30
+
+        config COCOPA01_FUNNEL_URL
+            string "Tailscale Funnel URL for target server"
+            default ""
+            help
+                Public Tailscale Funnel URL that points to the target server.
+                Example: "https://server.your-tailnet.ts.net"
+                Leave empty to disable Funnel redirect (falls back to Tailscale IP).
+
+        config GATE_COCOPA_URL
+            string "Redirect target for /cocopa/* handler"
+            default ""
+            help
+                Base URL for the /cocopa/* path-based redirect. The ESP32 strips
+                the /cocopa prefix and redirects (302) to this URL + rest-of-path.
+                WOL is sent to server before redirect.
+                Example: "https://server.your-tailnet.ts.net"
+                Leave empty to make /cocopa/* return 503.
+
+        config GATE_CITAS_URL
+            string "Redirect target for /citas/* handler"
+            default ""
+            help
+                Base URL for the /citas/* path-based redirect. The ESP32 strips
+                the /citas prefix and redirects (302) to this URL + rest-of-path.
+                Example: "https://service.your-domain.com"
+                Leave empty to make /citas/* return 503.
+    endmenu
+
+    # La versión del firmware NO va más en Kconfig: vive en main/version.h.
+    # El símbolo CONFIG_FIRMWARE_VERSION quedaba congelado en sdkconfig y el
+    # banner mostraba una versión vieja (gotcha STATUS.md sesiones 13/14/16).
+
+    menu "Inactivity Automation"
+        config AUTO_SUSPEND_AFTER_MIN
+            int "Minutes of inactivity before sending /suspend to cocopa01"
+            default 20
+            range 1 1440
+            help
+                Si el servidor está ON y no hay interacción durante este
+                tiempo, el ESP32 le envía POST /suspend (S3 RAM). Setear en
+                0 deshabilita auto-suspend (no recomendado — sin esto, el
+                flag `enabled` solo controla auto-off).
+
+        config AUTO_OFF_AFTER_MIN
+            int "Minutes after /suspend (or after last interaction) before /off"
+            default 15
+            range 0 1440
+            help
+                Si el servidor lleva este tiempo en S3 (o en S0 sin uso), y
+                NO estamos en horario protegido, se envía POST /off (S5).
+                Setear en 0 deshabilita auto-off: el servidor quedará en S3.
+
+        config AUTO_QUIET_START_MIN
+            int "Quiet hours start (minutes from midnight, Peru local time)"
+            default 480
+            range 0 1439
+            help
+                Inicio del rango horario donde el auto-off se SUPRIME.
+                Default 480 = 08:00. Durante este rango y hasta quiet_end
+                el servidor no se apagará automáticamente. Wrap-around
+                soportado: si start > end, el rango cruza medianoche
+                (e.g., 22:00..08:00 silencioso, 08:00..22:00 apagado).
+
+        config AUTO_QUIET_END_MIN
+            int "Quiet hours end (minutes from midnight, Peru local time)"
+            default 1200
+            range 0 1439
+            help
+                Fin (exclusivo) del rango horario donde el auto-off se suprime.
+                Default 1200 = 20:00. Auto-suspend sigue activo durante el
+                horario protegido — solo el apagado final se suprime.
+
+        config AUTO_DEFAULT_ENABLED
+            bool "Enable automation by default at first boot"
+            default y
+            help
+                Estado inicial de `enabled` cuando NVS está vacío. Cambiable
+                en runtime con /autoset enabled 0|1 sin reflashear.
+    endmenu
+
+    menu "Auto-Reboot Configuration"
+        config AUTO_REBOOT_ENABLED
+            bool "Enable periodic auto-reboot by default"
+            default y
+            help
+                Periódicamente reinicia el ESP32 para refrescar el sistema,
+                liberar memoria y mantener los sockets y la conectividad
+                en estado óptimo.
+
+        config AUTO_REBOOT_INTERVAL_MIN
+            int "Default auto-reboot interval (minutes)"
+            default 60
+            range 0 10080
+            help
+                Intervalo en minutos para el reinicio automático por defecto (60 = 1 hora).
+                0 deshabilita el reinicio automático ("switch off").
+    endmenu
+
+    menu "MicroLink (inlined component)"
+        # Symbols normally provided by components/microlink/Kconfig when
+        # microlink is registered as a separate component. Since we inlined
+        # the sources into main, we re-declare the essentials here so the
+        # inlined code can compile.
+        config ML_MAX_PEERS
+            int "Maximum simultaneous WireGuard peers"
+            default 16
+            range 1 64
+
+        config ML_NVS_MAX_PEERS
+            int "Maximum cached peers in NVS"
+            default 64
+            range 16 1024
+
+        config ML_H2_BUFFER_SIZE_KB
+            int "HTTP/2 receive buffer size (KB)"
+            default 64
+            range 64 2048
+
+        config ML_JSON_BUFFER_SIZE_KB
+            int "JSON parse buffer size (KB)"
+            default 64
+            range 64 2048
+
+        config ML_ZERO_COPY_WG
+            bool "Zero-copy WireGuard receive"
+            default n
+
+        config ML_ENABLE_CELLULAR
+            bool "Enable cellular modem support"
+            default n
+
+        config ML_ENABLE_NET_SWITCH
+            bool "Enable WiFi/cellular network switching"
+            default n
+
+        config ML_ENABLE_CONFIG_HTTPD
+            bool "Enable ML HTTP config server"
+            default n
+
+        config ML_WIFI_SSID
+            string "WiFi SSID (ML internal)"
+            default ""
+
+        config ML_WIFI_PASSWORD
+            string "WiFi password (ML internal)"
+            default ""
+
+        config ML_TAILSCALE_AUTH_KEY
+            string "Tailscale auth key (ML internal)"
+            default ""
+
+        config ML_DEVICE_NAME
+            string "Tailscale device name (ML internal)"
+            default "esp32-cocopa01"
+
+        config ML_PRIORITY_PEER_IP
+            string "Priority peer VPN IP"
+            default ""
+    endmenu
+
+endmenu

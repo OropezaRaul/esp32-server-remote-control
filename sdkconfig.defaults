@@ -1,0 +1,110 @@
+# ESP-IDF project defaults for ESP32_Remote_Control (ESP32-S3-N16R8)
+# Applied via `idf.py reconfigure` or merged into sdkconfig on first build.
+
+# === Target ===
+CONFIG_IDF_TARGET="esp32s3"
+# ESP32-S3 supports up to 240MHz; ESP-IDF default is 160MHz but we want full speed
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# === PSRAM (N16R8: 8MB OPI) ===
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# === Flash 16MB ===
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# === Partition table: single large app, no OTA ===
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# === FreeRTOS ===
+CONFIG_FREERTOS_HZ=1000
+
+# === lwIP: WireGuard needs larger buffers ===
+# NOTA (sesión 23): el rango de CONFIG_LWIP_MAX_SOCKETS en IDF v5.3 es 1..16 —
+# 16 ya es el MÁXIMO permitido. No subirlo a 24: kconfig lo rechaza y degrada.
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_SO_REUSE=y
+CONFIG_LWIP_SO_REUSE_RXTOALL=y
+# Habilitar timeouts en sockets BSD. Sin esto, setsockopt() con
+# SO_SNDTIMEO/SO_RCVTIMEO son no-ops y connect/send/recv pueden bloquear
+# minutos si el peer no responde (TCP retransmite). Esto rompia
+# query_state() y los handlers de Telegram cuando cocopa01 estaba apagado:
+# el primer poll quedaba UNKNOWN hasta 60-120s.
+CONFIG_LWIP_SO_SNDTIMEO=y
+CONFIG_LWIP_SO_RCVTIMEO=y
+
+# === Stack sizes ===
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=4096
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+
+# === Logging ===
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# === Watchdog ===
+CONFIG_ESP_TASK_WDT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+# Última red de seguridad (sesión 23): si un task se cuelga >60s (p.ej. un
+# notify HTTP que no retorna), PANIC = reboot automático en vez de quedar
+# colgado hasta el power-cycle manual. Sin esto el TWDT solo loguea.
+CONFIG_ESP_TASK_WDT_PANIC=y
+# === mbedTLS external memory allocation ===
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+
+
+# === WiFi ===
+CONFIG_ESP32_WIFI_ENABLED=y
+CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
+
+# === HTTP server ===
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# === TLS: keep ca_cert bundle small for cocopa01 LAN (HTTP only) ===
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# === MicroLink: Tailscale + WireGuard ===
+# We pull the microlink component, which declares its own Kconfig.
+# Below are key knobs from microlink/configs/ml_config.h defaults.
+
+# Peer prioritario (sesión 23): cocopa01 -> slot WireGuard GARANTIZADO
+# aunque la tabla de peers esté llena (evicta al LRU). IP VPN de cocopa01.
+CONFIG_ML_PRIORITY_PEER_IP="100.64.0.2"
+
+# Component-specific defaults are in components/microlink/Kconfig
+
+# === Misc ===
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# Don't enable bootloader skip image by default
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n
+
+# === mbedTLS — required by inlined microlink (Noise IK uses ChaCha20-Poly1305) ===
+CONFIG_MBEDTLS_CHACHA20_C=y
+CONFIG_MBEDTLS_POLY1305_C=y
+CONFIG_MBEDTLS_CHACHAPOLY_C=y
+
+# === Tailscale Funnel (Sesión B) ===
+# Off by default; enable in sdkconfig.credentials per-deployment.
+# When enabled, ESP32 advertises IngressEnabled=true so the Tailscale edge
+# forwards public HTTPS traffic to ESP32:443 (Tailscale terminates TLS).
+CONFIG_TAILSCALE_FUNNEL_ENABLED=n
+CONFIG_MBEDTLS_X509_CSR_WRITE_C=y
+CONFIG_MBEDTLS_PK_WRITE_C=y
+
+# === Tailscale PeerAPI (funnel experiment, session 17) ===
+CONFIG_TAILSCALE_PEERAPI_PORT=51902
+
+# === ACME (Let's Encrypt issuer, staging por default) ===
+CONFIG_ML_ACME_ENABLED=y
