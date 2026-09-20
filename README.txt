@@ -19,6 +19,8 @@ TABLE OF CONTENTS
 6. Setup & Flashing Instructions
 7. Server-Side Daemon Setup (Python/systemd)
 8. Public Release Changelog
+9. Acknowledgments & Credits
+10. License
 
 
 ------------------------------------------------------------------------------
@@ -399,4 +401,36 @@ v1.8.0 - Initial Public Release (2026-09-13)
 
 ==============================================================================
 End of README.txt
+------------------------------------------------------------------------------
+9. ACKNOWLEDGMENTS & CREDITS
+------------------------------------------------------------------------------
+This project was built upon the pioneering work of open-source developers who
+first made WireGuard and Tailscale possible on microcontrollers:
+
+- Cameron Malone (@CamM2325):
+  Creator of MicroLink (https://github.com/CamM2325/microlink), one of the
+  very few implementations of the Tailscale coordination protocol (ts2021)
+  for the ESP32. This project integrates MicroLink v2 as its VPN foundation
+  and built extensive resilience layers around it (resolving silent TCP half-open
+  session drops, zombie reconnection loops, and multi-interface failovers).
+
+- Daniel Hope (@danielhope / Floorsense Ltd):
+  Creator of wireguard_lwip (https://www.floorsense.nz), providing the
+  malloc-free C implementation of the WireGuard protocol for the lwIP stack.
+
+- Jason A. Donenfeld:
+  Creator of the WireGuard protocol (https://www.wireguard.com).
+
+- Daniel J. Bernstein:
+  Creator of the X25519 elliptic curve implementation used for key exchange.
+
+
+------------------------------------------------------------------------------
+10. LICENSE
+------------------------------------------------------------------------------
+This project is open-source software licensed under the MIT License.
+See the LICENSE file for full license terms and third-party copyright notices.
+You are free to use, modify, distribute, and integrate this software in
+personal or commercial projects without restriction.
+
 ==============================================================================
