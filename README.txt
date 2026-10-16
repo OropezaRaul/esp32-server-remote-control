@@ -1,5 +1,5 @@
 ==============================================================================
-ESP32-S3 SERVER REMOTE CONTROL & AUTO-WOL GATEWAY (v1.8.0)
+ESP32-S3 SERVER REMOTE CONTROL & AUTO-WOL GATEWAY (v1.9.0)
 ==============================================================================
 
 An autonomous, 24/7 out-of-band management gateway running on ESP32-S3.
@@ -90,6 +90,30 @@ management controller that:
   2) Echo port broadcast (port 7)
   3) Universal broadcast (255.255.255.255:9 and :7)
   4) Direct unicast with static ARP table injection (bypasses AP isolation).
+
+- Evidence-Based Readiness Gate (no sleep timers):
+  The gateway never waits a fixed amount of time before forwarding a client to
+  the server. A background task probes the real destination and publishes a
+  latch as soon as it answers:
+    1) the web front end (SPA shell) responds, and
+    2) the backend health endpoint responds.
+  Polling runs at 1 s while somebody is waiting on the splash screen and 30 s
+  as idle maintenance. A previous design waited a hard-coded 45 s after the
+  server was seen "ON", which cost ~25 s of dead waiting on cold boots and could
+  never adapt to how fast a machine actually boots.
+
+- Server-Side Readiness Push:
+  The server can verify its OWN public URL and announce readiness to the gateway
+  (GET /notify/ready, and /notify/unready when the public path stops serving).
+  A systemd unit is included under tools/. It closes the gap the ESP32 cannot
+  observe on its own: the gateway can see the backend over the LAN, but not
+  whether the reverse proxy or tunnel in front of it is up. Works with or
+  without it: the probe alone is enough.
+
+- Auto-WOL Supervisor:
+  A gateway visit arms a wake attempt in firmware (not in the browser): magic
+  packet immediately, then retried every 10 s for up to 4 minutes, stopping as
+  soon as the server answers and alerting over Telegram if the window expires.
 
 - Interactive Telegram Bot:
   Full command suite for server management, diagnostics, and log export.

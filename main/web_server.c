@@ -13,10 +13,13 @@
 #include <stdlib.h>
 #include <lwip/sockets.h>
 
+#include "ready_probe.h"
 #include "state.h"
+#include "wake.h"
 #include "wol.h"
 #include "cocopa01_client.h"
 #include "automation.h"
+#include "scheduler.h"
 #include "telegram.h"
 #include "microlink_wrapper.h"
 #include "microlink_watchdog.h"
@@ -33,9 +36,21 @@ static const char *TAG = "web";
 
 static httpd_handle_t s_server = NULL;
 static httpd_handle_t s_server_funnel = NULL;
-static uint32_t s_last_wol_trigger_ms = 0;
 
-#define WOL_TRIGGER_COOLDOWN_MS 5000UL
+// TECHO DE SEGURIDAD, ya no el camino normal.
+//
+// Antes este valor era la decision completa: tras ver cocopa01 ON el portal
+// esperaba 45 s fijos antes de redirigir, y hasta 75 s si no habia podido leer
+// /state en vivo. Medido en campo: el Funnel de cocopa01 ya servia 200 a los ~46 s
+// del WOL y el navegador no entraba hasta los ~78 s. Esos ~25 s eran el reloj
+// esperando a ciegas, y un reloj no sabe nada del arranque real.
+//
+// Ahora la decision la toma la EVIDENCIA (main/ready_probe.c): una sonda que el
+// ESP32 le hace al propio destino, o el aviso que cocopa01 manda con
+// GET /notify/ready en cuanto se verifica a si mismo. Este techo solo se consulta
+// cuando no hay ninguna medicion disponible (sin tailnet, TLS roto, :9999 caido),
+// para que el portal nunca se quede girando para siempre. Ver cocopa01_target_ready.
+#define COCOPA01_STACK_SETTLE_MS 45000UL
 
 static void send_text(httpd_req_t *req, const char *status, const char *body) {
     httpd_resp_set_status(req, status);
@@ -74,36 +89,38 @@ static esp_err_t handle_wol(httpd_req_t *req) {
     char mac_str[32] = {0};
     bool has_mac = (get_query_param(req, "mac", mac_str, sizeof(mac_str)) == ESP_OK);
 
-    uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (now_ms - s_last_wol_trigger_ms < WOL_TRIGGER_COOLDOWN_MS) {
-        char body[96];
-        snprintf(body, sizeof(body),
-                 "waking (cooldown, last trigger %lu ms ago)\n",
-                 (unsigned long)(now_ms - s_last_wol_trigger_ms));
-        httpd_resp_set_status(req, "202 Accepted");
-        httpd_resp_set_type(req, "text/plain; charset=utf-8");
-        httpd_resp_send(req, body, strlen(body));
+    if (has_mac) {
+        // /wol?mac=XX:XX... es una herramienta de diagnostico con MAC
+        // arbitraria: no entra al supervisor (que siempre apunta a
+        // CONFIG_COCOPA01_MAC_HEX), solo manda la rafaga puntual.
+        ESP_LOGI(TAG, "  mac=%s (rafaga puntual, sin supervisor)", mac_str);
+        esp_err_t err = wol_send_str(mac_str);
+        if (err != ESP_OK) {
+            send_text(req, "500 Internal Server Error", "wol_send failed\n");
+            return ESP_FAIL;
+        }
+        state_mark_known_on();
+        send_text(req, "202 Accepted", "magic packet sent\n");
         return ESP_OK;
     }
 
-    esp_err_t err;
-    if (has_mac) {
-        ESP_LOGI(TAG, "  mac=%s", mac_str);
-        err = wol_send_str(mac_str);
-    } else {
-        ESP_LOGI(TAG, "  using default mac");
-        err = wol_send_default();
-    }
-
+    // Camino normal: el supervisor manda la rafaga YA y reintenta solo cada
+    // 10 s hasta que cocopa01 responda (maximo 4 min). Antes este handler
+    // mandaba una unica rafaga y contestaba "retry in 30-60s" sin reintentar
+    // nada: si esa rafaga se perdia, nadie volvia a intentarlo.
+    esp_err_t err = wake_request("http /wol");
     if (err != ESP_OK) {
         send_text(req, "500 Internal Server Error", "wol_send failed\n");
         return ESP_FAIL;
     }
-
-    s_last_wol_trigger_ms = now_ms;
     state_mark_known_on();
-    send_text(req, "202 Accepted",
-              "waking up -- retry cocopa01 in 30-60s\n");
+
+    char body[160];
+    snprintf(body, sizeof(body),
+             "waking up -- reintentando WOL cada %us hasta %u min o hasta que "
+             "cocopa01 responda. Estado: /diag\n",
+             (unsigned)(WAKE_RETRY_MS / 1000), (unsigned)(WAKE_WINDOW_MS / 60000));
+    send_text(req, "202 Accepted", body);
     return ESP_OK;
 }
 
@@ -124,6 +141,7 @@ static esp_err_t handle_status(httpd_req_t *req) {
     cJSON_AddNumberToObject(root, "cocopa01_uptime_s", uptime_s);
     cJSON_AddStringToObject(root, "cocopa01_ip", CONFIG_COCOPA01_IP);
     cJSON_AddStringToObject(root, "cocopa01_mac", CONFIG_COCOPA01_MAC_HEX);
+    cJSON_AddStringToObject(root, "wake", wake_status_text());
     cJSON_AddNumberToObject(root, "heap_free", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     char *body = cJSON_PrintUnformatted(root);
@@ -195,7 +213,7 @@ static esp_err_t handle_root(httpd_req_t *req) {
         "<div class='grid'>"
         "<a class='btn btn-primary' href='/cocopa'>🍔 Entrar a CocopaSystem (Auto-WOL)</a>"
         "<a class='btn' href='/monitor'>📊 CocopaMonitor (:8085)</a>"
-        "<a class='btn btn-sec' href='/citas'>📅 Agendar Citas (NegHub + Auto-WOL)</a>"
+        "<a class='btn btn-sec' href='/app'>✨ Entrar a Kiubart (Auto-WOL)</a>"
         "<a class='btn btn-sec' href='/wol'>⚡ Enviar WOL ahora</a>"
         "<a class='btn btn-sec' href='/status'>ℹ️ Estado del Sistema (/status)</a>"
         "</div></body></html>";
@@ -235,12 +253,95 @@ static bool gate_is_lan_peer(const char *ip_str) {
     return strncmp(ip_str, "192.168.", 8) == 0;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static const char *s_ready_source = "ninguna";
+
+static bool cocopa01_target_ready(void) {
+    // cocopa01 dijo que SU ruta publica no sirve: manda por encima de todo lo que
+    // el ESP32 puede ver solo (el tunel cae aunque la LAN siga sirviendo, y ahi
+    // nuestra sonda daria listo y el cliente se comeria un 502 sin cura).
+    if (ready_public_broken()) { s_ready_source = "servidor:roto"; return false; }
+    if (ready_is_ready()) { s_ready_source = "sonda"; return true; }
+    if (state_stack_never_stopped()) { s_ready_source = "resume-s3"; return true; }
+    if (state_stack_settled(COCOPA01_STACK_SETTLE_MS)) { s_ready_source = "techo"; return true; }
+    s_ready_source = "ninguna";
+    return false;
+}
+
+static bool cocopa01_verified_alive(cocopa01_state_t st, bool cached_tcp) {
+    (void)cached_tcp;
+    if (st != COCOPA01_STATE_ON) return false;
+    // El servidor dijo que su ruta publica no sirve: ni sonda ni heuristica pueden
+    // abrir el gate contra su palabra.
+    if (ready_public_broken()) return false;
+    // Evidencia directa y reciente (sonda con 200 real, o aviso de cocopa01). Es
+    // MAS fuerte que un connect() a :22: la sonda ya vio al backend contestando, y
+    // con la maquina recien encendida y saturada por Docker un connect() de 250 ms
+    // puede dar falso negativo y costingnos un viaje extra del cliente.
+    if (ready_is_ready()) return true;
+    // Sin evidencia directa (resume desde S3, o el techo de seguridad) si exigimos
+    // un connect() real en el instante del 302: ahi la maquina esta estable y
+    // cuesta 1-3 ms, y es la unica red contra un 302 a un servidor caido.
+    if (state_stack_never_stopped() || state_stack_settled(COCOPA01_STACK_SETTLE_MS)) {
+        return cocopa01_tcp_alive(250);
+    }
+    return false;
+}
+
+
+
+
+
+static bool cocopa01_ready_cached(void) {
+    if (state_get() != COCOPA01_STATE_ON) return false;
+    // Con latch fresco no exigimos nada mas: el /state en vivo puede tardar 30 s en
+    // llegar cuando la maquina viene de un arranque, y hacer esperar al splash por
+    // el poll seria volver aicronizar con el reloj que acabamos de eliminar.
+    if (ready_is_ready()) return true;
+    return cocopa01_target_ready() && state_last_poll_tcp_alive();
+}
+
 static esp_err_t send_wake_splash(httpd_req_t *req, const char *target_url, const char *title) {
-    char buf[2500];
-    int len = snprintf(buf, sizeof(buf),
+    // Hay alguien esperando: el sondeo de readiness pasa a 1 s mientras dure la
+    // ventana (READY_LOGIC_ARM_MS), y se renueva en cada recarga del splash.
+    ready_arm();
+    char *buf = malloc(2500);
+    if (!buf) {
+        httpd_resp_send_500(req);
+        return ESP_ERR_NO_MEM;
+    }
+    int len = snprintf(buf, 2500,
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<meta http-equiv='refresh' content='4'>"
+        "<noscript><meta http-equiv='refresh' content='8'></noscript>"
         "<title>%s</title>"
         "<style>"
         "body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#f8fafc;"
@@ -263,22 +364,32 @@ static esp_err_t send_wake_splash(httpd_req_t *req, const char *target_url, cons
         "<a class='b' href='%s'>Entrar directo</a></div>"
         "<script>"
         "const t='%s';"
-        "function c(){fetch('/diag').then(r=>r.json()).then(d=>{"
-        "if(d.cocopa01_tcp_alive){"
-        "document.getElementById('st').innerText='¡Servidor listo! Entrando...';"
-        "window.location.href=t;"
-        "}else{setTimeout(c,2000)}"
-        "}).catch(()=>setTimeout(c,2500))}"
-        "setTimeout(c,1500);"
+        // El splash pregunta a /ready, que es barato (solo RAM, cero sondas de
+        // red) y devuelve el latch de readiness que mantiene la task de
+        // ready_probe. Antes preguntaba a /diag y cada vuelta gastaba hasta
+        // 500 ms en dos connect() con timeout DENTRO del worker de httpd.
+        "function c(){fetch('/ready',{cache:'no-store'}).then(r=>r.json()).then(d=>{"
+        "if(d.ready){"
+        "document.getElementById('st').innerText='¡Servidor listo! Conectando...';"
+        "setTimeout(()=>{window.location.href=t},250);"
+        "}else{"
+        "var e=(d.state==='ON')?'Levantando el sistema del negocio...':"
+        "(d.wake_pending?('Despertando servidor... (WOL intento '+d.wake_attempts+')'):'Iniciando servidor...');"
+        "document.getElementById('st').innerText=e;"
+        "setTimeout(c,1000)}"
+        "}).catch(()=>setTimeout(c,1500))}"
+        "setTimeout(c,500);"
         "</script></body></html>",
         title, title, target_url, target_url);
 
-    if (len <= 0 || len >= (int)sizeof(buf)) {
+    if (len <= 0 || len >= 2500) {
+        free(buf);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, buf, len);
+    free(buf);
     return ESP_OK;
 }
 
@@ -301,20 +412,13 @@ static esp_err_t handle_gate(httpd_req_t *req) {
     }
 
     cocopa01_state_t st = state_get();
-    bool tcp_up = state_last_poll_tcp_alive();
+    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
 
-    if (st != COCOPA01_STATE_ON || !tcp_up) {
-        static uint32_t s_last_gate_wol_ms = 0;
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        if (now_ms - s_last_gate_wol_ms >= 5000) {
-            s_last_gate_wol_ms = now_ms;
-            ESP_LOGI(TAG, "gate: cocopa01 down or not verified ON (st=%s, tcp_up=%d), sending WOL",
-                     cocopa01_state_str(st), (int)tcp_up);
-            esp_err_t werr = wol_send_default();
-            if (werr != ESP_OK) {
-                ESP_LOGW(TAG, "gate: WOL failed: %s", esp_err_to_name(werr));
-            }
-        }
+    if (!tcp_up) {
+        ESP_LOGI(TAG, "gate: cocopa01 down or not verified ON (st=%s), "
+                      "pidiendo despertar al supervisor",
+                 cocopa01_state_str(st));
+        wake_request("gate");
         return send_wake_splash(req, location, "Iniciando cocopa01 (/gate)...");
     }
 
@@ -340,20 +444,13 @@ static esp_err_t handle_monitor(httpd_req_t *req) {
     snprintf(location, sizeof(location), "http://%s:%u/", CONFIG_COCOPA01_TS_IP, port);
 
     cocopa01_state_t st = state_get();
-    bool tcp_up = state_last_poll_tcp_alive();
+    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
 
-    if (st != COCOPA01_STATE_ON || !tcp_up) {
-        static uint32_t s_last_monitor_wol_ms = 0;
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        if (now_ms - s_last_monitor_wol_ms >= 5000) {
-            s_last_monitor_wol_ms = now_ms;
-            ESP_LOGI(TAG, "monitor: cocopa01 down or not verified ON (st=%s, tcp_up=%d), sending WOL",
-                     cocopa01_state_str(st), (int)tcp_up);
-            esp_err_t werr = wol_send_default();
-            if (werr != ESP_OK) {
-                ESP_LOGW(TAG, "monitor: WOL failed: %s", esp_err_to_name(werr));
-            }
-        }
+    if (!tcp_up) {
+        ESP_LOGI(TAG, "monitor: cocopa01 down or not verified ON (st=%s), "
+                      "pidiendo despertar al supervisor",
+                 cocopa01_state_str(st));
+        wake_request("monitor");
         return send_wake_splash(req, location, "Iniciando CocopaMonitor (:8085)...");
     }
 
@@ -378,7 +475,7 @@ static esp_err_t handle_cocopa(httpd_req_t *req) {
     }
 
     // Strip /cocopa prefix from req->uri, append rest to CONFIG_GATE_COCOPA_URL.
-    // Ej: req->uri = "/server" → rest = "/" → "https://server.your-tailnet.ts.net/"
+    // Ej: req->uri = "/cocopa" → rest = "/" → "https://server.tailXXXX.ts.net/"
     //     req->uri = "/cocopa/admin/qr" → rest = "/admin/qr" → "https://.../admin/qr"
     const char *uri = req->uri;
     const char *rest = (strncmp(uri, "/cocopa", 7) == 0) ? uri + 7 : uri;
@@ -395,19 +492,12 @@ static esp_err_t handle_cocopa(httpd_req_t *req) {
 
     // Auto-WOL: si cocopa01 no está confirmado como ON y respondiendo TCP, enviar ráfaga WOL y mostrar splash
     cocopa01_state_t st = state_get();
-    bool tcp_up = state_last_poll_tcp_alive();
-    if (st != COCOPA01_STATE_ON || !tcp_up) {
-        static uint32_t s_last_cocopa_wol_ms = 0;
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        if (now_ms - s_last_cocopa_wol_ms >= 5000) {
-            s_last_cocopa_wol_ms = now_ms;
-            ESP_LOGI(TAG, "cocopa: server down or not verified ON (st=%s, tcp_up=%d), sending WOL burst",
-                     cocopa01_state_str(st), (int)tcp_up);
-            esp_err_t werr = wol_send_default();
-            if (werr != ESP_OK) {
-                ESP_LOGW(TAG, "cocopa: WOL failed: %s", esp_err_to_name(werr));
-            }
-        }
+    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    if (!tcp_up) {
+        ESP_LOGI(TAG, "cocopa: server down or not verified ON (st=%s), "
+                      "pidiendo despertar al supervisor",
+                 cocopa01_state_str(st));
+        wake_request("cocopa");
         return send_wake_splash(req, loc, "Despertando CocopaSystem...");
     }
 
@@ -418,55 +508,108 @@ static esp_err_t handle_cocopa(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ─── /citas: path-based redirect to neghub.site (con Auto-WOL para cocopa01) ──
+// ─── /app: path-based redirect to cocopa01 Funnel (with WOL) ──────────
 
-static esp_err_t handle_citas(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /citas");
+static esp_err_t handle_kiubart(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /app");
     automation_kick();
 
-    if (strlen(CONFIG_GATE_CITAS_URL) == 0) {
-        ESP_LOGW(TAG, "citas: GATE_CITAS_URL not configured, returning 503");
+#ifndef CONFIG_GATE_KIUBART_URL
+#define CONFIG_GATE_KIUBART_URL "https://server.tailXXXX.ts.net/app"
+#endif
+
+    if (strlen(CONFIG_GATE_KIUBART_URL) == 0) {
+        ESP_LOGW(TAG, "kiubart: GATE_KIUBART_URL not configured, returning 503");
         send_text(req, "503 Service Unavailable",
-                  "citas redirect not configured (GATE_CITAS_URL empty)\n");
+                  "kiubart redirect not configured (GATE_KIUBART_URL empty)\n");
         return ESP_OK;
     }
 
-    // Strip /citas prefix from req->uri, append rest to CONFIG_GATE_CITAS_URL.
+    // Strip /app prefix from req->uri, append rest to CONFIG_GATE_KIUBART_URL.
+    // Ej: req->uri = "/app" → rest = "" → "https://server.tailXXXX.ts.net/app"
+    //     req->uri = "/app/admin" → rest = "/admin" → "https://.../app/admin"
     const char *uri = req->uri;
-    const char *rest = (strncmp(uri, "/citas", 6) == 0) ? uri + 6 : uri;
-    size_t base_len = strlen(CONFIG_GATE_CITAS_URL);
-    bool base_has_slash = (base_len > 0 && CONFIG_GATE_CITAS_URL[base_len - 1] == '/');
+    const char *rest = (strncmp(uri, "/app", 8) == 0) ? uri + 8 : uri;
+    size_t base_len = strlen(CONFIG_GATE_KIUBART_URL);
+    bool base_has_slash = (base_len > 0 && CONFIG_GATE_KIUBART_URL[base_len - 1] == '/');
     if (*rest == '/' && base_has_slash) {
         rest++;
-    } else if (*rest == '\0' && !base_has_slash) {
-        rest = "/";
     }
 
     char loc[600];
-    snprintf(loc, sizeof(loc), "%s%s", CONFIG_GATE_CITAS_URL, rest);
+    snprintf(loc, sizeof(loc), "%s%s", CONFIG_GATE_KIUBART_URL, rest);
 
-    // Auto-WOL para cocopa01: el servicio de citas conecta con el servidor
+    // Auto-WOL para cocopa01: Kiubart corre en cocopa01
     cocopa01_state_t st = state_get();
-    bool tcp_up = state_last_poll_tcp_alive();
-    if (st != COCOPA01_STATE_ON || !tcp_up) {
-        static uint32_t s_last_citas_wol_ms = 0;
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        if (now_ms - s_last_citas_wol_ms >= 5000) {
-            s_last_citas_wol_ms = now_ms;
-            ESP_LOGI(TAG, "citas: server down or not verified ON (st=%s, tcp_up=%d), sending WOL burst",
-                     cocopa01_state_str(st), (int)tcp_up);
-            esp_err_t werr = wol_send_default();
-            if (werr != ESP_OK) {
-                ESP_LOGW(TAG, "citas: WOL failed: %s", esp_err_to_name(werr));
-            }
-        }
-        return send_wake_splash(req, loc, "Despertando NegHub Citas...");
+    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    if (!tcp_up) {
+        ESP_LOGI(TAG, "kiubart: server down or not verified ON (st=%s), "
+                      "pidiendo despertar al supervisor",
+                 cocopa01_state_str(st));
+        wake_request("kiubart");
+        return send_wake_splash(req, loc, "Despertando Kiubart...");
     }
 
-    ESP_LOGI(TAG, "citas: alive, redirect -> %s", loc);
+    ESP_LOGI(TAG, "kiubart: alive, redirect -> %s", loc);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", loc);
     httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// ─── /schedule: read/modify scheduled daily wake/off (LAN or Funnel) ────
+
+static esp_err_t handle_schedule(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        scheduler_config_t cfg;
+        scheduler_get(&cfg);
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "wake_set", cfg.wake_set);
+        cJSON_AddNumberToObject(root, "wake_min", cfg.wake_min);
+        cJSON_AddBoolToObject(root, "off_set", cfg.off_set);
+        cJSON_AddNumberToObject(root, "off_min", cfg.off_min);
+        char st_text[SCHEDULER_STATUS_BUF_SIZE];
+        scheduler_status_str(st_text, sizeof(st_text));
+        cJSON_AddStringToObject(root, "status", st_text);
+        char *body = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        if (body == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
+        send_json(req, body);
+        free(body);
+        return ESP_OK;
+    }
+
+    // POST: {"action": "reset"} or {"action": "clear_wake"}
+    if (req->content_len <= 0 || req->content_len > 512) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid body length");
+        return ESP_FAIL;
+    }
+    char buf[512];
+    int total = 0;
+    while (total < req->content_len) {
+        int n = httpd_req_recv(req, buf + total, req->content_len - total);
+        if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv"); return ESP_FAIL; }
+        total += n;
+    }
+    buf[total] = 0;
+    cJSON *doc = cJSON_Parse(buf);
+    if (!doc) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json"); return ESP_FAIL; }
+    const cJSON *act = cJSON_GetObjectItemCaseSensitive(doc, "action");
+    if (act && cJSON_IsString(act) && act->valuestring) {
+        if (strcmp(act->valuestring, "reset") == 0) {
+            scheduler_reset();
+            cJSON_Delete(doc);
+            send_text(req, "200 OK", "schedule reset OK (all cleared)\n");
+            return ESP_OK;
+        } else if (strcmp(act->valuestring, "clear_wake") == 0) {
+            scheduler_clear_wake();
+            cJSON_Delete(doc);
+            send_text(req, "200 OK", "wake schedule cleared OK\n");
+            return ESP_OK;
+        }
+    }
+    cJSON_Delete(doc);
+    send_text(req, "400 Bad Request", "unknown action (use 'reset' or 'clear_wake')\n");
     return ESP_OK;
 }
 
@@ -548,11 +691,11 @@ static esp_err_t handle_autoset(httpd_req_t *req) {
 // ─── /diag: diagnostic endpoint ─────────────────────────────────────────
 
 #if CONFIG_ESP_HTTPS_SERVER_ENABLE
-/* Resumen del cert TLS actual (NVS) para /diag: evita tener que sacar el
- * cert por serial para verificar CN/SAN/validez (historico sesión 19:
- * funnel roto por sospecha de cert equivocado — el /diag lo confirma o
- * descarta en segundos). El buffer NVS tiene +1 terminador null (ver
- * architecture.md §3.7); pasar cert_len+1 igual que el TLS server. */
+
+
+
+
+
 static void diag_cert_summary(char *out, size_t out_size) {
     const char *subj = "n/a", *nbf = "n/a", *na = "n/a";
     char subj_buf[160], nbf_buf[48], na_buf[48];
@@ -583,7 +726,105 @@ static void diag_cert_summary(char *out, size_t out_size) {
     snprintf(out, out_size, "subject=%s, not_before=%s GMT, not_after=%s GMT, source=%s",
              subj, nbf, na, web_server_funnel_tls_cert_source());
 }
-#endif /* CONFIG_ESP_HTTPS_SERVER_ENABLE */
+#endif 
+
+
+
+
+
+
+
+
+
+static esp_err_t handle_ready(httpd_req_t *req) {
+    cocopa01_state_t st = state_get();
+    bool ready = cocopa01_ready_cached();
+
+    wake_status_t ws;
+    wake_get_status(&ws);
+    ready_status_t rs;
+    ready_get_status(&rs);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ready", ready);
+    cJSON_AddStringToObject(root, "state", cocopa01_state_str(st));
+    cJSON_AddBoolToObject(root, "wake_pending", ws.pending);
+    cJSON_AddNumberToObject(root, "wake_attempts", ws.attempts);
+    cJSON_AddNumberToObject(root, "wake_elapsed_ms", ws.elapsed_ms);
+    cJSON_AddStringToObject(root, "wake_status", ws.text);
+    cJSON_AddStringToObject(root, "ready_status", ready_status_text());
+    cJSON_AddStringToObject(root, "ready_source", s_ready_source);
+    cJSON_AddNumberToObject(root, "ready_ms_ago", rs.ready_ms_ago);
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (body == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
+    send_json(req, body);
+    free(body);
+    return ESP_OK;
+}
+
+
+
+
+static bool notify_secret_ok(httpd_req_t *req) {
+    if (strlen(CONFIG_ESP32_READY_NOTIFY_SECRET) == 0) {
+        ESP_LOGW(TAG, "/notify deshabilitado: CONFIG_ESP32_READY_NOTIFY_SECRET vacio");
+        return false;
+    }
+    char got[96] = {0};
+    if (httpd_req_get_hdr_value_str(req, "X-ESP32-Ready-Secret",
+                                    got, sizeof(got)) != ESP_OK || got[0] == 0) {
+        ESP_LOGW(TAG, "/notify/ready sin cabecera de secreto (ip %s)",
+                 gate_peer_ip(req) ? gate_peer_ip(req) : "?");
+        return false;
+    }
+    if (strcmp(got, CONFIG_ESP32_READY_NOTIFY_SECRET) != 0) {
+        ESP_LOGW(TAG, "/notify/ready con secreto incorrecto (ip %s)",
+                 gate_peer_ip(req) ? gate_peer_ip(req) : "?");
+        return false;
+    }
+    return true;
+}
+
+
+
+static esp_err_t handle_notify_ready(httpd_req_t *req) {
+    if (!notify_secret_ok(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_send(req, "notify/ready: secreto invalido", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    const char *peer = gate_peer_ip(req);
+    ESP_LOGI(TAG, "/notify/ready desde %s: cocopa01 declara su stack listo",
+             peer ? peer : "?");
+    ready_notify_ready();
+    send_text(req, "200 OK", "ready: latch encendido. El portal redirige al instante.\n");
+    return ESP_OK;
+}
+
+
+
+
+
+
+
+
+
+
+static esp_err_t handle_notify_unready(httpd_req_t *req) {
+    if (!notify_secret_ok(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_send(req, "notify/unready: secreto invalido", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    const char *peer = gate_peer_ip(req);
+    ESP_LOGW(TAG, "/notify/unready desde %s: cocopa01 declara que su ruta publica no sirve",
+             peer ? peer : "?");
+    ready_notify_unready();
+    send_text(req, "200 OK", "ready: latch apagado y gate cerrado. El portal vuelve a esperar.\n");
+    return ESP_OK;
+}
+
 
 static esp_err_t handle_diag(httpd_req_t *req) {
     ESP_LOGI(TAG, "GET /diag");
@@ -601,7 +842,63 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     cJSON_AddStringToObject(root, "cocopa01_state", cocopa01_state_str(st));
     cJSON_AddStringToObject(root, "cocopa01_ip", CONFIG_COCOPA01_IP);
     cJSON_AddStringToObject(root, "cocopa01_ts_ip", CONFIG_COCOPA01_TS_IP);
-    cJSON_AddBoolToObject(root, "cocopa01_tcp_alive", cocopa01_tcp_alive(2000));
+    // Si state != ON y no hay fast-poll activo, usar el resultado cacheado del poll
+    // para no bloquear la tarea monohilo httpd con timeouts TCP.
+    bool tcp_alive = (st == COCOPA01_STATE_ON || state_is_fast_polling()) ? cocopa01_tcp_alive(250) : state_last_poll_tcp_alive();
+    bool web_alive = (st == COCOPA01_STATE_ON || tcp_alive) ? cocopa01_web_alive(250) : false;
+    cJSON_AddBoolToObject(root, "cocopa01_tcp_alive", tcp_alive);
+    cJSON_AddBoolToObject(root, "cocopa01_web_alive", web_alive);
+    bool stack_ok = state_stack_settled(COCOPA01_STACK_SETTLE_MS);
+    bool server_up = web_alive || (st == COCOPA01_STATE_ON && tcp_alive);
+    // ready = el servidor responde Y su stack publicable (nginx + Funnel)
+    // puede recibir ya al cliente. Sin el gate de stack, el hueco medido de
+    // ~20 s tras un arranque en frio devolvia 502 al cliente.
+    cJSON_AddBoolToObject(root, "cocopa01_ready", server_up && cocopa01_target_ready());
+    cJSON_AddStringToObject(root, "ready_source", s_ready_source);
+
+    // Sonda de readiness (ready_probe.c): con que respuesta real se cerro el
+    // latch y cuando fue. Es el numero que hay que mirar para saber si el portal
+    // esta esperando por algo real o por el techo de seguridad.
+    {
+        ready_status_t rs;
+        ready_get_status(&rs);
+        cJSON_AddBoolToObject(root, "ready_latched", rs.latched);
+        cJSON_AddBoolToObject(root, "ready_armed", rs.armed);
+        cJSON_AddNumberToObject(root, "ready_ms_ago", rs.ready_ms_ago);
+        cJSON_AddNumberToObject(root, "ready_probes", rs.probes);
+        cJSON_AddNumberToObject(root, "ready_ok", rs.ok);
+        cJSON_AddNumberToObject(root, "ready_err", rs.err);
+        cJSON_AddNumberToObject(root, "ready_last_duration_ms", rs.last_duration_ms);
+        cJSON_AddNumberToObject(root, "ready_last_status", rs.last_status);
+        cJSON_AddNumberToObject(root, "ready_last_api_status", rs.last_api_status);
+        cJSON_AddStringToObject(root, "ready_status", ready_status_text());
+    }
+    cJSON_AddBoolToObject(root, "cocopa01_stack_ok", stack_ok);
+    cJSON_AddBoolToObject(root, "cocopa01_boot_verified", state_boot_verified_live());
+    {
+        uint32_t s_att = 0, s_ok = 0, s_err = 0; int32_t s_len = -1;
+        state_http_stats(&s_att, &s_ok, &s_err, &s_len);
+        cJSON_AddNumberToObject(root, "cocopa01_state_http_attempts", s_att);
+        cJSON_AddNumberToObject(root, "cocopa01_state_http_ok", s_ok);
+        cJSON_AddNumberToObject(root, "cocopa01_state_http_err", s_err);
+        cJSON_AddNumberToObject(root, "cocopa01_state_http_last_len", s_len);
+    }
+    cJSON_AddNumberToObject(root, "cocopa01_uptime_s", state_cocopa01_uptime_s());
+
+    // Supervisor de Auto-WOL (wake.c). Antes el WOL era un disparo unico sin
+    // ninguna traza: cuando la rafaga se perdia no habia forma de saber si el
+    // ESP32 la habia enviado, cuantas veces habia reintentado ni cuando
+    // confirmo que el server respondio. Esto lo hace verificable por HTTP.
+    {
+        wake_status_t ws;
+        wake_get_status(&ws);
+        cJSON_AddBoolToObject(root, "wake_pending", ws.pending);
+        cJSON_AddNumberToObject(root, "wake_attempts", ws.attempts);
+        cJSON_AddNumberToObject(root, "wake_elapsed_ms", ws.elapsed_ms);
+        cJSON_AddNumberToObject(root, "wake_retry_s", ws.retry_ms / 1000);
+        cJSON_AddNumberToObject(root, "wake_window_s", ws.window_ms / 1000);
+        cJSON_AddStringToObject(root, "wake_status", ws.text);
+    }
 
     // Network
     cJSON_AddStringToObject(root, "client_ip", peer_ip ? peer_ip : "unknown");
@@ -669,12 +966,12 @@ static esp_err_t handle_diag(httpd_req_t *req) {
 
 // ─── URI tables ──────────────────────────────────────────────────────────────
 
-/* URIs públicas: registradas en ambos servers (:80 LAN/Tailscale + :443 Funnel).
- * No permiten mutaciones críticas (no POST/DELETE de certs, no shutdown).
- * Las URIs con sufijo `*` son wildcard (requieren uri_match_fn =
- * httpd_uri_match_wildcard en el server config): matchean el prefijo y
- * reciben el URI completo en req->uri, que los handlers usan para hacer
- * path stripping en el redirect. */
+
+
+
+
+
+
 static const httpd_uri_t s_uris_public[] = {
     { .uri = "/",        .method = HTTP_GET, .handler = handle_root   },
     { .uri = "/wol",     .method = HTTP_GET, .handler = handle_wol    },
@@ -683,25 +980,30 @@ static const httpd_uri_t s_uris_public[] = {
     { .uri = "/gate",     .method = HTTP_GET, .handler = handle_gate    },
     { .uri = "/monitor*", .method = HTTP_GET, .handler = handle_monitor },
     { .uri = "/cocopa*",  .method = HTTP_GET, .handler = handle_cocopa  },
-    { .uri = "/citas*",  .method = HTTP_GET, .handler = handle_citas  },
-    { .uri = "/diag",    .method = HTTP_GET, .handler = handle_diag   },
+    { .uri = "/app*", .method = HTTP_GET, .handler = handle_kiubart },
+      { .uri = "/ready",   .method = HTTP_GET, .handler = handle_ready  },
+      { .uri = "/diag",    .method = HTTP_GET, .handler = handle_diag   },
     { .uri = "/portmap", .method = HTTP_GET, .handler = handle_portmap},
+    { .uri = "/schedule",.method = HTTP_GET, .handler = handle_schedule},
 };
 
 #if CONFIG_ESP_HTTPS_SERVER_ENABLE
-/* Forward declarations (handlers definidos más abajo) */
+
 static esp_err_t handle_api_cert_set(httpd_req_t *req);
 static esp_err_t handle_api_cert_info(httpd_req_t *req);
 static esp_err_t handle_api_cert_delete(httpd_req_t *req);
 
-/* URIs privadas: SOLO :80 (LAN/Tailscale). El :443 público NO las registra.
- * Incluyen gestión de certs y diagnóstico interno. */
+
+
 static const httpd_uri_t s_uris_private[] = {
     { .uri = "/api/cert/set",  .method = HTTP_POST,   .handler = handle_api_cert_set },
     { .uri = "/api/cert/info", .method = HTTP_GET,    .handler = handle_api_cert_info },
     { .uri = "/api/cert",      .method = HTTP_DELETE, .handler = handle_api_cert_delete },
     { .uri = "/autoset",       .method = HTTP_GET,    .handler = handle_autoset },
+      { .uri = "/notify/ready", .method = HTTP_GET,  .handler = handle_notify_ready },
+      { .uri = "/notify/unready", .method = HTTP_GET,  .handler = handle_notify_unready },
     { .uri = "/autoset",       .method = HTTP_POST,   .handler = handle_autoset },
+    { .uri = "/schedule",      .method = HTTP_POST,   .handler = handle_schedule },
 };
 #endif
 
@@ -744,9 +1046,8 @@ esp_err_t web_server_start(void) {
     config.stack_size = 8192;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.uri_match_fn = httpd_uri_match_wildcard;  /* habilita /cocopa* y /citas* */
-    /* 10 URIs registradas (7 públicas + 3 privadas). Default es 8. */
-    config.max_uri_handlers = 16;
+    config.uri_match_fn = httpd_uri_match_wildcard;  
+    config.max_uri_handlers = 20;
 
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) {
@@ -782,8 +1083,8 @@ esp_err_t web_server_funnel_start(void) {
     config.ctrl_port += 1;  // different from :80 to avoid collision
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.uri_match_fn = httpd_uri_match_wildcard;  /* habilita /cocopa* y /citas* */
-    config.max_uri_handlers = 16;
+    config.uri_match_fn = httpd_uri_match_wildcard;  
+    config.max_uri_handlers = 20;
 
     esp_err_t err = httpd_start(&s_server_funnel, &config);
     if (err != ESP_OK) {
@@ -791,7 +1092,7 @@ esp_err_t web_server_funnel_start(void) {
         return err;
     }
 
-    /* :443 Funnel: SOLO URIs públicas (no exponer endpoints de cert al público) */
+    
     err = register_uris_public(s_server_funnel, ":443");
     if (err != ESP_OK) {
         httpd_stop(s_server_funnel);
@@ -825,7 +1126,7 @@ esp_err_t web_server_funnel_stop(void) {
 
 #if CONFIG_ESP_HTTPS_SERVER_ENABLE
 
-/* Estado del cert actualmente cargado (para diagnóstico en /diag) */
+
 static const char *s_cert_source = "none";  // "nvs", "fallback-hardcoded"
 
 esp_err_t web_server_funnel_tls_start(void) {
@@ -836,7 +1137,7 @@ esp_err_t web_server_funnel_tls_start(void) {
 
     ESP_LOGI(TAG, "Starting Funnel HTTPS server on :443 (TLS)...");
 
-    /* Cargar cert: NVS primero, fallback al hardcoded */
+    
     uint8_t *cert_copy = NULL, *key_copy = NULL;
     size_t cert_len = 0, key_len = 0;
     esp_err_t err = ml_cert_load(&cert_copy, &cert_len, &key_copy, &key_len);
@@ -844,10 +1145,10 @@ esp_err_t web_server_funnel_tls_start(void) {
         s_cert_source = "nvs";
         ESP_LOGI(TAG, "Using cert from NVS (cert=%u bytes, key=%u bytes)",
                  (unsigned)cert_len, (unsigned)key_len);
-        /* CRÍTICO: mbedtls_x509_crt_parse y mbedtls_pk_parse_key SOLO detectan
-         * PEM si buf[len-1] == '\0'. ml_cert_load reserva len+1 y termina en
-         * null; pasar la longitud SIN el terminador hace que mbedtls trate el
-         * PEM como DER → X509_INVALID_FORMAT (-0x2180) por conexión. */
+        
+
+
+
         cert_len += 1;
         key_len += 1;
     } else {
@@ -866,13 +1167,13 @@ esp_err_t web_server_funnel_tls_start(void) {
     cfg.httpd.ctrl_port += 1;  // diferente de :80 para evitar colisión
     cfg.httpd.max_open_sockets = 4;
     cfg.httpd.lru_purge_enable = true;
-    cfg.httpd.uri_match_fn = httpd_uri_match_wildcard;  /* habilita /cocopa* y /citas* */
-    cfg.httpd.max_uri_handlers = 16;
+    cfg.httpd.uri_match_fn = httpd_uri_match_wildcard;  
+    cfg.httpd.max_uri_handlers = 20;
 
-    /* esp_https_server NO copia los buffers: los parsea POR CONEXIÓN con el
-     * puntero que le pasamos. Retener los heap buffers en statics y liberar
-     * los anteriores recién aquí (reemplazados en cada start). Liberarlos
-     * después de httpd_ssl_start era use-after-free con heap reciclado. */
+    
+
+
+
     static uint8_t *s_heap_cert = NULL, *s_heap_key = NULL;
 
     cfg.servercert = cert_copy;
@@ -882,8 +1183,8 @@ esp_err_t web_server_funnel_tls_start(void) {
 
     err = httpd_ssl_start(&s_server_funnel, &cfg);
 
-    /* Si vino de NVS retenemos los buffers vivos mientras el server corra.
-     * Si vino del fallback, son punteros a .rodata, NO liberar ni retener. */
+    
+
     if (s_cert_source[0] == 'n' && cert_copy != (uint8_t *)acme_test_cert_der) {
         free(s_heap_cert);
         free(s_heap_key);
@@ -916,8 +1217,8 @@ esp_err_t web_server_funnel_tls_stop(void) {
     return err;
 }
 
-/* Recarga TLS server con el cert que esté en NVS ahora. Usado después de un
- * POST /api/cert/set exitoso. */
+
+
 esp_err_t web_server_funnel_tls_reload(void) {
     ESP_LOGI(TAG, "Reloading TLS server with new cert from NVS...");
     esp_err_t err = web_server_funnel_tls_stop();
@@ -929,14 +1230,14 @@ const char *web_server_funnel_tls_cert_source(void) {
     return s_cert_source;
 }
 
-/* === POST /api/cert/set ===
- * Body: JSON con campos "cert" y "key" (strings PEM).
- * Persiste en NVS y recarga TLS server.
- *
- * Por seguridad, este endpoint SOLO escucha en :80 (LAN + Tailscale), NO en
- * :443 (Funnel público). El control plane Tailscale no puede llamarlo.
- * Está pensado para el cliente ACME interno del ESP32, o para que un script
- * en cocopa01 suba el cert durante el bootstrap. */
+
+
+
+
+
+
+
+
 static esp_err_t handle_api_cert_set(httpd_req_t *req) {
     if (req->content_len == 0 || req->content_len > 16384) {
         ESP_LOGE(TAG, "api/cert/set: bad content_len=%d", req->content_len);
@@ -950,8 +1251,8 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
         return ESP_ERR_NO_MEM;
     }
 
-    /* httpd_req_recv puede retornar menos bytes que content_len si el payload
- * es grande. Hacer loop hasta recibir todos. */
+    
+
     int recv_len = 0;
     int total_len = 0;
     int remaining = req->content_len;
@@ -990,9 +1291,9 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
     const char *cert_in = cert_j->valuestring;
     const char *key_in  = key_j->valuestring;
 
-    /* mbedTLS en el ESP32-S3 (v3.x) tiene problemas parseando algunos PEM
-     * con newlines incrustados. Convertir PEM → DER en el momento del upload
-     * es más confiable. */
+    
+
+
     uint8_t *cert_der = NULL;
     size_t cert_der_len = 0;
     uint8_t *key_der = NULL;
@@ -1002,7 +1303,7 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
     ESP_LOGI(TAG, "api/cert/set: received cert=%u chars, key=%u chars",
              (unsigned)strlen(cert_in), (unsigned)strlen(key_in));
 
-    /* Detectar formato: PEM comienza con "-----BEGIN" */
+    
     if (strncmp(cert_in, "-----BEGIN", 10) == 0) {
         ESP_LOGI(TAG, "  cert is PEM, converting to DER");
         conv_err = ml_pem_to_der(cert_in, strlen(cert_in), &cert_der, &cert_der_len);
@@ -1036,7 +1337,7 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
 
     esp_err_t err = ml_cert_store(cert_der, cert_der_len,
                                    key_der,  key_der_len);
-    /* Si hicimos malloc en pem_to_der, liberar */
+    
     if (cert_der != (uint8_t *)cert_in) free(cert_der);
     if (key_der  != (uint8_t *)key_in)  free(key_der);
     cJSON_Delete(root);
@@ -1046,7 +1347,7 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    /* Recargar TLS server con el nuevo cert */
+    
     err = web_server_funnel_tls_reload();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TLS reload failed: %s", esp_err_to_name(err));
@@ -1059,8 +1360,8 @@ static esp_err_t handle_api_cert_set(httpd_req_t *req) {
     return ESP_OK;
 }
 
-/* === GET /api/cert/info ===
- * Reporta si hay cert y de dónde viene. Útil para diagnóstico. */
+
+
 static esp_err_t handle_api_cert_info(httpd_req_t *req) {
     bool present = false;
     size_t cert_len = 0, key_len = 0;
@@ -1078,8 +1379,8 @@ static esp_err_t handle_api_cert_info(httpd_req_t *req) {
     return ESP_OK;
 }
 
-/* === DELETE /api/cert ===
- * Borra el cert de NVS (rollback a autofirmado). */
+
+
 static esp_err_t handle_api_cert_delete(httpd_req_t *req) {
     esp_err_t err = ml_cert_clear();
     if (err != ESP_OK) {

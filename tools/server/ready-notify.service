@@ -1,0 +1,16 @@
+[Unit]
+Description=Watches the public URL and tells the ESP32 gateway of every change
+Documentation=file:///usr/local/bin/ready-notify.sh
+After=network-online.target tailscaled.service docker.service nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+EnvironmentFile=-/etc/ready-notify.env
+ExecStart=/usr/local/bin/ready-notify.sh
+ExecStopPost=-/bin/rm -f /run/server-ready
+
+[Install]
+WantedBy=multi-user.target

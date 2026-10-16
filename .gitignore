@@ -14,16 +14,13 @@ package-lock.json
 # Toolchain / IDF paths (in case accidentally in-tree)
 .toolchain-versions
 
-# Secrets & Private Docs — NEVER commit to public
+# Secrets — NEVER commit
 credentials.h
 secrets.h
 sdkconfig.credentials
 *.env
 .env
 *.key
-STATUS.md
-RED_ENLACES.md
-docs/
 
 # Existing Arduino-build leftovers (transitional)
 .pio/

@@ -30,6 +30,29 @@ static volatile uint32_t g_last_known_on_ms = 0;
 static volatile uint32_t g_cocopa01_boot_time = 0;
 static volatile uint32_t g_last_poll_ms = 0;
 static volatile bool g_last_poll_tcp_alive = false;
+// Momento (ms) en el que se observo por ultima vez un boot_time DISTINTO al
+// que ya teniamos. 0 = no hemos visto ningun arranque nuevo desde el ultimo
+// OFF (o sea: un simple resume desde S3, que no necesita espera).
+static volatile uint32_t g_boot_changed_ms = 0;
+// Periodo ON durante el cual se detecto ese arranque en frio. Si el servidor
+// vuelve a ON en un periodo POSTERIOR (p.ej. un resume desde S3 que el poll no
+// llego a ver como SUSPEND), la marca vieja no aplica a este periodo.
+static volatile uint32_t g_cold_boot_since_on_ms = 0;
+// true cuando el uptime que reportamos proviene de una lectura EN VIVO de
+// /state hecha en este boot del ESP32 (no del boot_time cacheado en NVS).
+static volatile bool g_boot_verified_live = false;
+// true mientras el boot_time guardado NO corresponda al periodo ON actual:
+// o sea, entre que el server vuelve a responder y que el poll consigue leer
+// /state en vivo. Sin esta marca, durante esa ventana el gate de stack creeria
+// que no hubo arranque en frio (porque el uptime cacheado parece enorme) y
+// mandaria al cliente a un 502. La marca la baja note_boot_time_live().
+static volatile bool g_boot_confirmed_for_on = false;
+// Diagnostico de la lectura EN VIVO de /state (visible en /diag por HTTP: con
+// el log en UART0 no hay forma de verlo sin conectar un cable al UART).
+static volatile uint32_t s_state_http_attempts = 0;
+static volatile uint32_t s_state_http_ok = 0;
+static volatile uint32_t s_state_http_err = 0;
+static volatile int32_t  s_state_http_last_len = -1;
 
 #define LAST_ON_HEURISTIC_MS 300000UL
 
@@ -52,6 +75,88 @@ static uint32_t load_persisted_boot_time(void) {
 }
 
 uint32_t state_cocopa01_boot_time(void) { return g_cocopa01_boot_time; }
+
+// Registra un boot_time leido EN VIVO por HTTP. Si difiere del que teniamos,
+// cocopa01 arranco de cero (no es un resume desde S3) y hay que esperar a que
+// el stack web levante antes de mandar al cliente.
+static void note_boot_time_live(uint32_t new_bt) {
+    if (new_bt == 0) return;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if (new_bt != g_cocopa01_boot_time) {
+        ESP_LOGI(TAG, "cocopa01 boot_time changed: %u -> %u (arranque en frio, "
+                      "esperando a que el stack web levante)",
+                 (unsigned)g_cocopa01_boot_time, (unsigned)new_bt);
+        g_boot_changed_ms = now;
+        g_cold_boot_since_on_ms = g_state_entered_ms;   // informativo
+        g_cocopa01_boot_time = new_bt;
+        persist_boot_time(new_bt);
+    }
+    g_boot_verified_live = true;
+    g_boot_confirmed_for_on = true;
+}
+
+bool state_boot_verified_live(void) { return g_boot_verified_live; }
+
+uint32_t state_http_stats(uint32_t *attempts, uint32_t *ok, uint32_t *err, int32_t *last_len) {
+    if (attempts) *attempts = s_state_http_attempts;
+    if (ok)       *ok       = s_state_http_ok;
+    if (err)      *err      = s_state_http_err;
+    if (last_len) *last_len = s_state_http_last_len;
+    return s_state_http_ok;
+}
+
+bool state_stack_settled(uint32_t cold_boot_min_ms) {
+    if (g_state != COCOPA01_STATE_ON) return false;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+    if (g_boot_verified_live && g_boot_confirmed_for_on) {
+        // No hemos visto boot nuevo -> es un resume desde S3: el stack sigue en
+        // pie y no hay que esperar nada.
+        if (g_boot_changed_ms == 0) return true;
+        // Hubo arranque en frio. OJO: ya NO se puede comparar g_cold_boot_since_on_ms
+        // con state_entered_at_ms() para decidir si la espera ya se pago. Durante un
+        // arranque en frio el /state se lee por primera vez cuando la maquina vuelve,
+        // y en ese instante g_state_entered_ms es la transicion a SUSPEND, no la de ON:
+        // la comparacion nunca coincidia y la espera se saltaba entera (medido el
+        // 2026-10-15: el gate se abria en el mismo instante en que aparecia ON). El
+        // caso de "ya lo pagamos" es ahora state_stack_never_stopped().
+        if (g_cold_boot_since_on_ms != state_entered_at_ms()) return true;
+        // Arranque en frio: la espera se ancla al momento en que el ESP32
+        // VOLVIO a ver el servidor (transicion a ON), no al instante en que
+        // leyo el boot_time. Durante el arranque la lectura de /state puede
+        // tardar 20-30 s mas (python saturado con Docker arrancando) y usar el
+        // boot_time como ancla alargaba la espera del cliente a ~100 s.
+        uint32_t anchor = state_entered_at_ms();
+        if (anchor == 0) anchor = g_boot_changed_ms;
+        return (uint32_t)(now - anchor) >= cold_boot_min_ms;
+    }
+
+    // Plan B: todavia no pudimos leer /state en vivo para ESTE periodo ON
+    // (el server acaba de volver y el poll aun no consulto, el servicio :9999
+    // cayo, o el ESP32 arranco sin red). No podemos saber si fue arranque en
+    // frio, asi que aplicamos la espera completa desde la transicion a ON.
+    // Es la red de seguridad: el portal NUNCA se queda esperando para siempre
+    // por un dato que no llego, y nunca manda al cliente antes de tiempo.
+    uint32_t on_ms = state_entered_at_ms();
+    if (on_ms == 0) return false;
+    return (uint32_t)(now - on_ms) >= (cold_boot_min_ms + 30000UL);
+}
+// true cuando cocopa01 NUNCA se apago desde el ultimo OFF: el stack sigue en pie
+// y no hay nada que esperar. Es la via rapida (sin esperas) del resume desde S3.
+//
+// Por que NO basta con state_stack_settled(0): esa funcion exige un minimo de
+// espera, asi que con 0 ms devuelve true tambien durante un arranque en frio, que
+// es justo cuando NO hay que dar via libre todavia. Aqui se separa el "el stack
+// nunca cayo" (que se sabe leyendo el boot_time) del "ya paso suficiente tiempo"
+// (que era el reloj que se elimina).
+bool state_stack_never_stopped(void) {
+    if (g_state != COCOPA01_STATE_ON) return false;
+    if (!g_boot_verified_live || !g_boot_confirmed_for_on) return false;
+    // g_boot_changed_ms == 0 -> el boot_time leido en vivo es el mismo que
+    // teniamos: nadie arranco de cero, el stack sigue en pie desde antes.
+    return g_boot_changed_ms == 0;
+}
+
 uint32_t state_last_poll_ms(void) { return g_last_poll_ms; }
 bool state_last_poll_tcp_alive(void) { return g_last_poll_tcp_alive; }
 
@@ -100,6 +205,21 @@ void state_set(cocopa01_state_t s) {
         // g_last_known_on_ms para que la heurística de query_state
         // NUNCA degrade un equipo apagado a SUSPEND (S3).
         g_last_known_on_ms = 0;
+        // El boot_time cacheado queda obsoleto: el próximo arranque (en frio)
+        // debe verse como boot NUEVO para que la espera del stack web aplique,
+        // mientras que un simple resume desde S3 no debe pagarla.
+        g_boot_changed_ms = 0;
+        g_boot_verified_live = false;
+    }
+    // Al salir de ON el boot_time cacheado deja de ser confiable: si el server
+    // vuelve, hay que releer /state antes de decidir si fue arranque en frio.
+    // Ademas se limpia la marca de "arranque en frio": sin esto, un resume
+    // desde S3 posterior a un arranque en frio seguia pagando la espera de
+    // 45 s (el timestamp viejo hacia que todo ON posterior se creyera frio).
+    if (s != COCOPA01_STATE_ON) {
+        g_boot_confirmed_for_on = false;
+        g_boot_changed_ms = 0;
+        g_cold_boot_since_on_ms = 0;
     }
     // Cualquier transición a ON (OFF->ON, SUSPEND->ON, UNKNOWN->ON) implica
     // que alguien prendió o despertó el servidor → resetear timer de inactividad.
@@ -239,21 +359,31 @@ static int cocopa01_http_get_body(char *buf, int buf_size) {
 
 static void refresh_boot_time(void) {
     char buf[512];
+    s_state_http_attempts++;
     int body_len = cocopa01_http_get_body(buf, sizeof(buf));
-    if (body_len <= 0) return;
+    s_state_http_last_len = body_len;
+    if (body_len <= 0) {
+        s_state_http_err++;
+        ESP_LOGW(TAG, "refresh_boot_time: /state ilegible desde cocopa01 (body_len=%d)",
+                 body_len);
+        return;
+    }
+    s_state_http_ok++;
     char *js = strchr(buf, '{');
-    if (js == NULL) return;
+    if (js == NULL) {
+        ESP_LOGW(TAG, "refresh_boot_time: /state sin JSON (%.60s)", buf);
+        return;
+    }
     cJSON *doc = cJSON_Parse(js);
-    if (doc == NULL) return;
+    if (doc == NULL) {
+        ESP_LOGW(TAG, "refresh_boot_time: /state JSON invalido (%.60s)", js);
+        return;
+    }
     const cJSON *bt = cJSON_GetObjectItemCaseSensitive(doc, "boot_time");
     if (cJSON_IsNumber(bt)) {
-        uint32_t new_bt = (uint32_t)bt->valuedouble;
-        if (new_bt != g_cocopa01_boot_time) {
-            ESP_LOGI(TAG, "cocopa01 boot_time changed: %u -> %u",
-                     (unsigned)g_cocopa01_boot_time, (unsigned)new_bt);
-            g_cocopa01_boot_time = new_bt;
-            persist_boot_time(new_bt);
-        }
+        note_boot_time_live((uint32_t)bt->valuedouble);
+    } else {
+        ESP_LOGW(TAG, "refresh_boot_time: /state sin campo boot_time (%.60s)", js);
     }
     const cJSON *act = cJSON_GetObjectItemCaseSensitive(doc, "active");
     if (act != NULL) {
@@ -315,13 +445,7 @@ static const char *query_http_state(void) {
     }
     const cJSON *bt_node = cJSON_GetObjectItemCaseSensitive(doc, "boot_time");
     if (cJSON_IsNumber(bt_node)) {
-        uint32_t new_bt = (uint32_t)bt_node->valuedouble;
-        if (new_bt != g_cocopa01_boot_time) {
-            ESP_LOGI(TAG, "cocopa01 boot_time changed: %u -> %u",
-                     (unsigned)g_cocopa01_boot_time, (unsigned)new_bt);
-            g_cocopa01_boot_time = new_bt;
-            persist_boot_time(new_bt);
-        }
+        note_boot_time_live((uint32_t)bt_node->valuedouble);
     }
     const cJSON *act_node = cJSON_GetObjectItemCaseSensitive(doc, "active");
     if (act_node != NULL) {
@@ -346,7 +470,7 @@ static const char *query_http_state(void) {
 // y la heuristica LAST_ON_HEURISTIC_MS decide OFF vs SUSPEND.
 static cocopa01_state_t query_state(void) {
     g_last_poll_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (cocopa01_tcp_alive(2000)) {
+    if (cocopa01_tcp_alive(400)) {
         g_last_poll_tcp_alive = true;
         return COCOPA01_STATE_ON;
     }
@@ -378,7 +502,25 @@ static cocopa01_state_t query_state(void) {
     return COCOPA01_STATE_OFF;
 }
 
+static TaskHandle_t s_state_task = NULL;
+static volatile uint32_t s_fast_poll_until_ms = 0;
+
+void state_trigger_fast_poll(void) {
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_fast_poll_until_ms = now + (60UL * 1000UL); // 60 segundos de fast poll
+    if (s_state_task != NULL) {
+        xTaskNotifyGive(s_state_task);
+    }
+}
+
+bool state_is_fast_polling(void) {
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (now < s_fast_poll_until_ms) && (g_state != COCOPA01_STATE_ON);
+}
+
 void state_poll_task(void *arg) {
+    s_state_task = xTaskGetCurrentTaskHandle();
+
     // First poll after a short delay so we don't block app_main() with HTTP I/O
     // (which would trip the task watchdog).
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -392,7 +534,13 @@ void state_poll_task(void *arg) {
     }
     while (1) {
         system_health_heartbeat(HEALTH_CHANNEL_STATE);
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_COCOPA01_POLL_INTERVAL_S * 1000));
+
+        uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        bool fast = (now < s_fast_poll_until_ms) && (g_state != COCOPA01_STATE_ON);
+        uint32_t delay_ms = fast ? 2500 : (CONFIG_COCOPA01_POLL_INTERVAL_S * 1000);
+
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
+
         system_health_heartbeat(HEALTH_CHANNEL_STATE);
         cocopa01_state_t new_state = query_state();
         if (new_state != COCOPA01_STATE_UNKNOWN) {
@@ -412,6 +560,12 @@ void state_init(void) {
     g_last_poll_ms = 0;
     g_last_poll_tcp_alive = false;
     g_cocopa01_boot_time = load_persisted_boot_time();
+    // El boot_time de NVS es orientativo hasta que hagamos una lectura en vivo
+    // de /state en este boot: recien ahi sabemos si el server arranco de cero.
+    g_boot_changed_ms = 0;
+    g_boot_verified_live = false;
+    g_boot_confirmed_for_on = false;
+    g_cold_boot_since_on_ms = 0;
     if (g_cocopa01_boot_time != 0) {
         ESP_LOGI(TAG, "loaded persisted boot_time: %u", (unsigned)g_cocopa01_boot_time);
     }

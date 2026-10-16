@@ -1,7 +1,7 @@
 /*
  * ml_cert.c — NVS storage para certs TLS del ESP32
  *
- * El ESP32 recibe certs vía HTTP POST /api/cert/set desde cocopa01 (que ejecuta
+ * El ESP32 recibe certs vía HTTP POST /api/cert/set from the server itself (which runs
  * acme.sh + dns_tailscale). El cert se guarda en NVS namespace
  * `nvs_tailscale_cert` con dos blobs:
  *   - `tls_cert`: fullchain PEM (cert + intermediate)

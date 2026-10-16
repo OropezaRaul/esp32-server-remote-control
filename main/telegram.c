@@ -19,6 +19,7 @@
 #include "wifi.h"
 #include "state.h"
 #include "wol.h"
+#include "wake.h"
 #include "cocopa01_client.h"
 #include "automation.h"
 #include "scheduler.h"
@@ -279,11 +280,16 @@ static void handle_reboot_cmd(int64_t chat_id, const char *args) {
 
 static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, const char *args) {
     if (cmd_len == 4 && strncmp(cmd, "wake", 4) == 0) {
-        if (wol_send_default() == ESP_OK) {
+        // El supervisor de wake.c reintenta solo cada 10 s hasta 4 min: un
+        // unico magic packet se pierde con facilidad (y tras un corte de luz
+        // era justo lo que dejaba el negocio caido sin aviso).
+        if (wake_request("telegram /wake") == ESP_OK) {
             state_mark_known_on();
-            telegram_send_text(chat_id, "OK: Magic packet sent to cocopa01.");
+            telegram_send_text(chat_id,
+                "OK: WOL enviado a cocopa01. Reintentando cada 10 s hasta 4 min "
+                "o hasta que responda (ver /diag).");
         } else {
-            telegram_send_text(chat_id, "Cooldown active. Wait before retry.");
+            telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
         }
     } else if (cmd_len == 6 && strncmp(cmd, "status", 6) == 0) {
         // /status responde rápido (sin TCP bloqueante) usando el cache
@@ -465,8 +471,8 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
         // to go S3 -> S0 (via WOL) -> S5. Do the whole sequence in one
         // /off invocation so the user only has to type one command.
         telegram_send_text(chat_id, "cocopa01 is in S3. Waking...");
-        if (wol_send_default() != ESP_OK) {
-            telegram_send_text(chat_id, "ERR: WOL send failed (cooldown?). Try again in a few seconds.");
+        if (wake_request("telegram /off desde S3") != ESP_OK) {
+            telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
             return;
         }
         // Wait for cocopa01 to come back online. Resume from S3 is fast

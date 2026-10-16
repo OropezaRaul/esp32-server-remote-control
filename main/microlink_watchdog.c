@@ -21,15 +21,15 @@ static const char *TAG = "ml_watchdog";
 #define WATCHDOG_STACK    3072
 #define WATCHDOG_PRIO     3
 
-/* Ventana de gracia (us) para el notify de Telegram ANTES del reset. Si el
- * POST a api.telegram.org se cuelga (bug histórico de esp_http_client en IDF
- * v5.3: timeouts ignorados en la fase de conexión cuando la red está muerta),
- * el timer dispara esp_restart() igual — el reboot NO puede quedar bloqueado
- * por una llamada de red. */
+
+
+
+
+
 #define ML_WD_REBOOT_NOTIFY_GRACE_US (2000ULL * 1000ULL)
 
-/* Callback del timer de deadline: camino GARANTIZADO de reset. Se ejecuta en
- * el contexto del task de esp_timer (task context, esp_restart() es válido). */
+
+
 static void reboot_deadline_cb(void *arg) {
     ESP_LOGE(TAG, ">>> reboot deadline fired — esp_restart() incondicional");
     esp_restart();
@@ -38,12 +38,12 @@ static void reboot_deadline_cb(void *arg) {
 typedef struct {
     bool ever_connected;
     microlink_wd_recovery_kind_t last_recovery_kind;
-    uint32_t total_recoveries;      /* reboots completos */
-    uint32_t total_rebinds;         /* rebinds suaves */
-    uint32_t last_recovery_ms;      /* tick del ultimo REBOOT disparado */
+    uint32_t total_recoveries;      
+    uint32_t total_rebinds;         
+    uint32_t last_recovery_ms;      
     uint32_t last_recovery_target_s;
-    uint32_t last_rebind_ms;        /* tick del ultimo REBIND disparado */
-    bool rebind_done;               /* rebind ya intentado en este episodio */
+    uint32_t last_rebind_ms;        
+    bool rebind_done;               
     bool task_running;
 } watchdog_state_t;
 
@@ -71,12 +71,12 @@ static void notify_telegram(const char *line) {
     }
 }
 
-/* Notifica a Telegram y luego rebootea el ESP32. El REBOOT es GARANTIZADO:
- * se arma un timer de deadline (esp_timer) ANTES del notify, así un notify
- * colgado (red muerta) no puede impedir el esp_restart(). El notify es
- * best-effort: si vuelve antes de la gracia, rebooteamos directo. */
+
+
+
+
 static void trigger_reboot(uint32_t target_s) {
-    /* Rate-limit: si disparamos algo hace poco, no duplicar. */
+    
     uint32_t tick = now_ms();
     if (s_wd.last_recovery_ms != 0 &&
         (tick - s_wd.last_recovery_ms) < ML_WD_RECOVERY_COOLDOWN_MS) {
@@ -92,8 +92,8 @@ static void trigger_reboot(uint32_t target_s) {
 
     ESP_LOGE(TAG, ">>> REBOOT triggered after %u s disconnected", (unsigned)target_s);
 
-    /* 1) Deadline incondicional: pase lo que pase con el notify, en
-     * ML_WD_REBOOT_NOTIFY_GRACE_US ejecutamos esp_restart(). */
+    
+
     const esp_timer_create_args_t timer_args = {
         .callback = reboot_deadline_cb,
         .name = "wd_reboot_deadline",
@@ -106,21 +106,21 @@ static void trigger_reboot(uint32_t target_s) {
         esp_restart();
     }
 
-    /* 2) Notify best-effort. Si se cuelga, el timer de arriba corta. Si
-     * vuelve rápido, esp_restart() se ejecuta acá (el timer queda sin usar). */
+    
+
     notify_telegram("Watchdog: Tailscale sin conexion > umbral. Reboot del ESP32 en curso.");
 
-    /* Breve delay para que el POST de Telegram termine de enviarse antes
-     * del reset (esp_restart no espera I/O pendiente). */
+    
+
     vTaskDelay(pdMS_TO_TICKS(500));
 
     ESP_LOGE(TAG, "calling esp_restart()");
     esp_restart();
-    /* No retorna. La proxima linea que se ejecuta aqui es tras el boot. */
+    
 }
 
-/* Llena un wd_input_t con el snapshot actual (fuente unica de verdad:
- * la misma funcion de decision corre en wd_evaluate() y en /diag). */
+
+
 static void fill_wd_input(wd_input_t *in, microlink_state_t st) {
     memset(in, 0, sizeof(*in));
     in->ever_connected = s_wd.ever_connected;
@@ -151,7 +151,7 @@ static void watchdog_task(void *arg) {
         microlink_state_t st = microlink_wrapper_get_state();
         uint32_t last_connected = microlink_wrapper_get_last_connected_ms();
 
-        /* Armado: solo despues del primer CONNECTED. */
+        
         if (!s_wd.ever_connected) {
             if (st == ML_STATE_CONNECTED && last_connected != 0) {
                 s_wd.ever_connected = true;
@@ -166,9 +166,9 @@ static void watchdog_task(void *arg) {
         fill_wd_input(&in, st);
         wd_action_t act = wd_evaluate(&in);
 
-        /* Episodio terminado: hay evidencia de vida mas fresca que el
-         * umbral de rebind (sesion recuperada por si sola o por el rebind
-         * anterior). Permite un nuevo rebind en el proximo episodio. */
+        
+
+
         if (in.disconnect_ms < in.rebind_after_ms) {
             if (s_wd.rebind_done) {
                 ESP_LOGI(TAG, "session alive again (disconnect=%us) -- rebind window reset",
@@ -186,7 +186,7 @@ static void watchdog_task(void *arg) {
                      microlink_wrapper_state_name(st));
             ESP_LOGW(TAG, "%s", msg);
             trigger_reboot(CONFIG_MICROLINK_WATCHDOG_REBOOT_AFTER_S);
-            /* No retorna (esp_restart), salvo cooldown. */
+            
             break;
         }
         case WD_ACT_REBIND: {
@@ -232,14 +232,14 @@ static void watchdog_task(void *arg) {
     }
 }
 
-#else  /* CONFIG_MICROLINK_WATCHDOG_ENABLED */
+#else  
 
 static void watchdog_task(void *arg) {
     ESP_LOGW(TAG, "watchdog disabled via Kconfig");
     vTaskDelete(NULL);
 }
 
-#endif /* CONFIG_MICROLINK_WATCHDOG_ENABLED */
+#endif 
 
 esp_err_t microlink_watchdog_init(void) {
 #if CONFIG_MICROLINK_WATCHDOG_ENABLED
@@ -283,8 +283,8 @@ void microlink_watchdog_get_status(microlink_wd_status_t *out) {
         out->last_rebind_ms_ago = tick - s_wd.last_rebind_ms;
     }
 
-    /* Misma metrica y misma funcion de decision que la task: un solo
-     * lugar donde vive la verdad sobre "cuanto lleva caido". */
+    
+
     microlink_state_t st = microlink_wrapper_get_state();
     wd_input_t in;
     fill_wd_input(&in, st);
@@ -298,7 +298,7 @@ void microlink_watchdog_get_status(microlink_wd_status_t *out) {
 
 esp_err_t microlink_watchdog_force_recover(void) {
 #if CONFIG_MICROLINK_WATCHDOG_ENABLED
-    /* Disparar reboot inmediato. No-op si estamos en cooldown. */
+    
     trigger_reboot(0);
     return ESP_OK;
 #else

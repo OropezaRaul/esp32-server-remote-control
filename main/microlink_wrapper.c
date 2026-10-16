@@ -14,10 +14,10 @@ static const char *TAG = "microlink";
 
 static microlink_t *s_ml = NULL;
 
-/* Tick (ms) del ultimo ML_STATE_CONNECTED observado. El watchdog lo lee
- * para decidir cuanto tiempo lleva la sesion caida. volatile + lectura
- * atomica en word de 32 bits, suficiente para la sincronizacion entre
- * el callback de estado (coord task) y el watchdog task. */
+
+
+
+
 static volatile uint32_t s_last_connected_ms = 0;
 
 static uint32_t now_ms(void) {
@@ -63,12 +63,12 @@ esp_err_t microlink_wrapper_start(void) {
         .enable_derp = true,
         .enable_stun = true,
         .enable_disco = true,
-        /* 32 peers (sesión 23): la tabla la clampa ML_MAX_PEERS en Kconfig
-         * (antes 16). Con 9 dispositivos reales + peers viejos cacheados en
-         * NVS (nunca se purgan) la tabla de 16 se llenaba al boot y el
-         * control plane no podía agregar peers actuales. El slot
-         * prioritario (cocopa01) se configura vía CONFIG_ML_PRIORITY_PEER_IP
-         * en Kconfig/sdkconfig. */
+        
+
+
+
+
+
         .max_peers = 40,
         .wifi_tx_power_dbm = 13,
 #if CONFIG_TAILSCALE_FUNNEL_ENABLED
@@ -139,20 +139,20 @@ bool microlink_wrapper_peer_is_up(uint32_t dest_vpn_ip) {
     return ml_wg_mgr_peer_is_up(s_ml, dest_vpn_ip);
 }
 
-/* Lectura atomica del tick ms del ultimo CONNECTED (0 = nunca visto).
- * Consumida por microlink_watchdog.c. */
+
+
 uint32_t microlink_wrapper_get_last_connected_ms(void) {
     return s_last_connected_ms;
 }
 
-/* Staleness del control plane (0 = nunca recibio nada). Delegado directo
- * al accessor de microlink para mantener la misma base de tiempo
- * (esp_timer). Consumida por microlink_watchdog.c. */
+
+
+
 uint32_t microlink_wrapper_get_ctrl_stale_ms(void) {
     return (s_ml != NULL) ? microlink_get_ctrl_stale_ms(s_ml) : 0;
 }
 
-/* Nombre legible de un microlink_state_t. Retorna string estatico. */
+
 const char *microlink_wrapper_state_name(microlink_state_t s) {
     return state_name(s);
 }

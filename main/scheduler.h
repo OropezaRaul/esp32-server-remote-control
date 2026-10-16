@@ -49,6 +49,9 @@ void scheduler_get(scheduler_config_t *out);
 // Deshabilita wake+off y persiste. Equivale a scheduler_set con ambos unset.
 esp_err_t scheduler_reset(void);
 
+// Deshabilita solo el encendido programado (wake) conservando off si existe.
+esp_err_t scheduler_clear_wake(void);
+
 // Texto multi-línea listo para Telegram: horarios configurados (o "none"),
 // en formato 24h hora Perú, y si SNTP está sincronizado.
 void scheduler_status_str(char *out, size_t out_size);

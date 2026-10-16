@@ -19,8 +19,10 @@
 #include "wifi.h"
 #include "wol.h"
 #include "cocopa01_client.h"
+#include "ready_probe.h"
 #include "state.h"
 #include "telegram.h"
+#include "wake.h"
 #include "web_server.h"
 #include "microlink_wrapper.h"
 #include "microlink_watchdog.h"
@@ -83,8 +85,9 @@ static void handle_serial_command(char *line) {
         esp_ip4_addr_t ip = wifi_get_ip();
         ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&ip));
     } else if (strcmp(line, "wake") == 0) {
-        if (wol_send_default() == ESP_OK) {
+        if (wake_request("serial") == ESP_OK) {
             state_mark_known_on();
+            ESP_LOGI(TAG, "wake solicitado desde serial: %s", wake_status_text());
         }
     } else if (strcmp(line, "off") == 0) {
         ESP_LOGI(TAG, "cocopa01 TCP/22 alive: %s",
@@ -214,10 +217,10 @@ static void serial_task(void *arg) {
 }
 
 #if CONFIG_ML_ACME_ENABLED
-/* ACME issuer task: waits for a stable Tailscale connection, then runs the
- * DNS-01 flow against the configured directory (staging by default) and
- * reloads the funnel TLS server with the new cert. Re-runs every 24h;
- * ml_acme skips issuance while the stored cert is still young (60 days). */
+
+
+
+
 static esp_err_t acme_publish_dns(const char *name, const char *value,
                                   uint32_t timeout_ms) {
     return microlink_wrapper_set_dns(name, value, timeout_ms);
@@ -227,7 +230,7 @@ static volatile bool s_acme_force = false;
 void acme_request_renew(void) { s_acme_force = true; }
 
 static void acme_task(void *arg) {
-    /* Wait for Tailscale CONNECTED and a self FQDN */
+    
     for (;;) {
         if (microlink_wrapper_is_connected() &&
             microlink_wrapper_get_fqdn() != NULL) {
@@ -261,7 +264,7 @@ static void acme_task(void *arg) {
                 ESP_LOGE(TAG, "acme: issuance failed: %s", ml_acme_last_error());
             }
         }
-        /* Esperar en slices de 30s para reaccionar a 'acme renew' serial */
+        
         for (int i = 0; i < 2880 && !s_acme_force; i++) {
             vTaskDelay(pdMS_TO_TICKS(30000));
         }
@@ -298,12 +301,12 @@ void app_main(void) {
     ESP_LOGI(TAG, "Connecting to WiFi SSID: %s", CONFIG_WIFI_SSID);
     esp_err_t err = wifi_init_sta();
     if (err != ESP_OK) {
-        /* No-fatal desde la sesión 23: antes un fallo del primer intento
-         * (AP caído al boot, router reiniciando) hacía que se saltaran
-         * Telegram/HTTP/microlink PARA SIEMPRE — el ESP32 quedaba mudo
-         * hasta el power-cycle. Ahora wifi_keepalive_task reintenta en
-         * background y los subsistemas de abajo arrancan igual: cuando el
-         * AP reaparezca, todo cobra vida solo. */
+        
+
+
+
+
+
         ESP_LOGW(TAG, "WiFi sin conexión en el primer intento (%s). "
                       "Arrancando subsistemas igual; wifi_keepalive reintenta en background.",
                  esp_err_to_name(err));
@@ -313,6 +316,22 @@ void app_main(void) {
     }
 
     {
+        // Supervisor de Auto-WOL: debe existir ANTES de web_server_start para
+        // que ningun handler (/cocopa, /wol...) lo encuentre a medio iniciar.
+        esp_err_t wk_err = wake_init();
+        if (wk_err != ESP_OK) {
+            ESP_LOGE(TAG, "wake_init failed: %s", esp_err_to_name(wk_err));
+        }
+
+        // Sonda de readiness: tambien antes de web_server_start, porque los
+        // handlers (/cocopa, /ready) leen su latch. Es la pieza que reemplaza
+        // la espera por reloj de la 1.8.2.
+        esp_err_t rd_err = ready_init();
+        if (rd_err != ESP_OK) {
+            ESP_LOGE(TAG, "ready_init failed: %s (el portal usara el techo de seguridad)",
+                     esp_err_to_name(rd_err));
+        }
+
         esp_err_t ws_err = web_server_start();
         if (ws_err != ESP_OK) {
             ESP_LOGE(TAG, "web_server_start failed: %s", esp_err_to_name(ws_err));
@@ -320,8 +339,8 @@ void app_main(void) {
 
         esp_err_t ws_funnel_err;
 #if CONFIG_ESP_HTTPS_SERVER_ENABLE
-        /* Fase 1: TLS server con cert autofirmado hardcoded.
-         * En Fase 2 cargaremos el cert desde NVS (emitido por Let's Encrypt). */
+        
+
         ws_funnel_err = web_server_funnel_tls_start();
         if (ws_funnel_err != ESP_OK) {
             ESP_LOGE(TAG, "web_server_funnel_tls_start failed: %s", esp_err_to_name(ws_funnel_err));
@@ -367,8 +386,8 @@ void app_main(void) {
         }
 
 #if CONFIG_ML_ACME_ENABLED
-        /* Issuer task: needs time(NULL) (SNTP sync) for renewal checks only;
-         * first issuance runs even if clock is not set (last==0). */
+        
+
         xTaskCreate(acme_task, "acme", 12288, NULL, 3, NULL);
 #endif
 

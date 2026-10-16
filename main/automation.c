@@ -33,6 +33,11 @@ static const char *TAG = "automation";
 #define NVS_KEY_QUIET_START  "quiet_start"
 #define NVS_KEY_QUIET_END    "quiet_end"
 #define NVS_KEY_LAST_KICK_MS "last_kick_ms"
+
+// Cada cuanto se escribe el kick en NVS (ver automation_kick). El valor
+// en RAM se actualiza siempre; esto acota el desgaste de flash y el
+// bloqueo que un commit le mete a los demas usuarios de NVS.
+#define KICK_PERSIST_EVERY_MS 30000UL
 #define NVS_KEY_OFF_CYCLE    "off_cycle"
 #define NVS_KEY_OFF_DEADLINE "off_deadline"
 
@@ -265,14 +270,27 @@ void automation_kick(void) {
         cycle_clear();
     }
 
-    // Persistir el kick también permite sobrevivir reboots: si cocopa01
+    // Persistir el kick tambien permite sobrevivir reboots: si cocopa01
     // sigue ON tras un reboot del ESP32, no queremos suspend inmediato
     // porque el usuario estuvo activo hace 1 minuto.
+    //
+    // PERO solo cada KICK_PERSIST_EVERY_MS: automation_kick() lo llama
+    // CADA request (incluidos los polls del splash, que son 1 por segundo
+    // mientras arranca el servidor) y un commit de NVS es un erase+write de
+    // flash que ademas bloquea a los demas usuarios de NVS (el poll de estado
+    // con boot_time, el watchdog). Un arranque en frio son ~40 requests por
+    // minuto desde el splash: 40 commits de flash sin ningun aporte. El valor
+    // en RAM siempre se actualiza; el throttle es solo de escritura.
+    static uint32_t s_kick_persisted_ms = 0;
+    if ((uint32_t)(g_last_interaction_ms - s_kick_persisted_ms) < KICK_PERSIST_EVERY_MS) {
+        return;
+    }
     nvs_handle_t h;
     if (nvs_open_write(&h) == ESP_OK) {
         nvs_set_u32(h, NVS_KEY_LAST_KICK_MS, g_last_interaction_ms);
         nvs_commit(h);
         nvs_close(h);
+        s_kick_persisted_ms = g_last_interaction_ms;
     }
 }
 

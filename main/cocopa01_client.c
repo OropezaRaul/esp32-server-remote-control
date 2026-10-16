@@ -146,7 +146,15 @@ esp_err_t cocopa01_send_suspend(void) {
     return cocopa01_post("suspend");
 }
 
-bool cocopa01_tcp_alive(int timeout_ms) {
+bool cocopa01_tcp_port_alive(uint16_t port, int timeout_ms) {
+    return cocopa01_tcp_port_alive_at(CONFIG_COCOPA01_IP, port, timeout_ms);
+}
+
+bool cocopa01_tcp_port_alive_at(const char *ip, uint16_t port, int timeout_ms) {
+    if (ip == NULL || *ip == 0) return false;
+    if (timeout_ms <= 0) timeout_ms = 300;
+    if (timeout_ms > 1000) timeout_ms = 1000;
+
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return false;
 
@@ -163,8 +171,8 @@ bool cocopa01_tcp_alive(int timeout_ms) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(CONFIG_COCOPA01_SSH_PORT);
-    addr.sin_addr.s_addr = inet_addr(CONFIG_COCOPA01_IP);
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(ip);
 
     int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) {
@@ -192,6 +200,123 @@ bool cocopa01_tcp_alive(int timeout_ms) {
     }
     close(sock);
     return true;
+}
+
+bool cocopa01_tcp_alive(int timeout_ms) {
+    return cocopa01_tcp_port_alive(CONFIG_COCOPA01_SSH_PORT, timeout_ms);
+}
+
+bool cocopa01_web_alive(int timeout_ms) {
+    // Probar Nginx reverse proxy (:8080) primero, o servicio de shutdown HTTP (:9999)
+    if (cocopa01_tcp_port_alive(8080, timeout_ms)) {
+        return true;
+    }
+    return cocopa01_tcp_port_alive(CONFIG_COCOPA01_HTTP_PORT, timeout_ms);
+}
+
+int cocopa01_http_probe_at(const char *ip, uint16_t port, const char *host_header,
+                           const char *path, int timeout_ms) {
+    if (ip == NULL || *ip == 0) return -1;
+    if (host_header == NULL || *host_header == 0) host_header = ip;
+    if (path == NULL || *path == 0) path = "/";
+    if (timeout_ms <= 0) timeout_ms = 1000;
+    if (timeout_ms > 3000) timeout_ms = 3000;
+
+    // Mismo approach que cocopa01_post()/state.c:cocopa01_http_get_body: BSD
+    // sockets + O_NONBLOCK + select() para que el timeout sea REAL y corto.
+    // Nada de esp_http_client: la sonda corre cada segundo y no puede dejar un
+    // worker colgado (los timeouts stale del SSL transport en IDF v5.3 ya
+    // produjeron un POST de 60-126 s en la sesion 20).
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
+        close(sock);
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(ip);
+
+    int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) {
+        close(sock);
+        return -1;
+    }
+    if (rc < 0) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(sock, &wfds);
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        int sr = select(sock + 1, NULL, &wfds, NULL, &tv);
+        if (sr <= 0) {
+            close(sock);
+            return -1;
+        }
+        int sockerr = 0;
+        socklen_t slen = sizeof(sockerr);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &sockerr, &slen) < 0 || sockerr != 0) {
+            close(sock);
+            return -1;
+        }
+    }
+
+    fcntl(sock, F_SETFL, flags);
+    struct timeval tv = { .tv_sec = timeout_ms / 1000,
+                          .tv_usec = (timeout_ms % 1000) * 1000 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    char req[320];
+    int req_len = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "User-Agent: esp32-readiness/1.0\r\n"
+        "Accept: */*\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        path, host_header);
+    if (req_len <= 0 || req_len >= (int)sizeof(req)) {
+        close(sock);
+        return -1;
+    }
+
+    int sent = 0;
+    while (sent < req_len) {
+        int n = send(sock, req + sent, req_len - sent, 0);
+        if (n <= 0) { close(sock); return -1; }
+        sent += n;
+    }
+
+    // Solo nos interesa la linea de estado: paramos en cuanto llega \r\n. Asi el
+    // cuerpo de la pagina (que puede ser enorme) no se descarga nunca.
+    char buf[256];
+    int total = 0;
+    while (total < (int)sizeof(buf) - 1) {
+        int n = recv(sock, buf + total, sizeof(buf) - 1 - total, 0);
+        if (n < 0) {
+            if (total == 0) { close(sock); return -1; }
+            break;
+        }
+        if (n == 0) break;
+        total += n;
+        buf[total] = 0;
+        if (strstr(buf, "\r\n") != NULL) break;
+    }
+    close(sock);
+
+    if (total == 0) return -1;
+    int status_code = 0;
+    if (sscanf(buf, "HTTP/1.%*d %d", &status_code) != 1 || status_code <= 0) {
+        return -1;
+    }
+    return status_code;
 }
 
 static esp_err_t do_get_stats(const char *host_ip, char *buf, size_t buf_size) {

@@ -13,6 +13,7 @@
 #include "cocopa01_client.h"
 #include "telegram.h"
 #include "wol.h"
+#include "wake.h"
 #include "system_health.h"
 
 static const char *TAG = "scheduler";
@@ -151,11 +152,12 @@ static void fire_wake(void) {
         telegram_broadcast("Scheduler: hora de wake — cocopa01 ya estaba ON, nada que hacer.");
         return;
     }
-    esp_err_t wres = wol_send_default();
+    esp_err_t wres = wake_request("scheduler");
     if (wres == ESP_OK) {
         state_mark_known_on();
-        ESP_LOGI(TAG, "wake programado: WOL enviado");
-        telegram_broadcast("Scheduler: wake programado — magic packet enviado a cocopa01.");
+        ESP_LOGI(TAG, "wake programado: WOL enviado (con reintentos)");
+        telegram_broadcast("Scheduler: wake programado — magic packet enviado a cocopa01 "
+                           "(reintento automatico cada 10 s hasta 4 min).");
     } else {
         ESP_LOGW(TAG, "wake programado: WOL falló (%s)", esp_err_to_name(wres));
         char em[160];
@@ -310,6 +312,14 @@ esp_err_t scheduler_reset(void) {
     scheduler_config_t empty = { .wake_set = false, .wake_min = MIN_UNSET,
                                  .off_set = false,  .off_min = MIN_UNSET };
     return scheduler_set(&empty);
+}
+
+esp_err_t scheduler_clear_wake(void) {
+    scheduler_config_t cfg;
+    scheduler_get(&cfg);
+    cfg.wake_set = false;
+    cfg.wake_min = MIN_UNSET;
+    return scheduler_set(&cfg);
 }
 
 void scheduler_status_str(char *out, size_t out_size) {

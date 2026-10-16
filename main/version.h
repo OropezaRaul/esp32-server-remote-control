@@ -10,4 +10,4 @@
 // siempre refleja el código compilado; nada que sincronizar.
 //
 // Al bumppear: editar SOLO la línea de abajo y recompilar.
-#define FIRMWARE_VERSION "1.8.0-system-health-wdt"
+#define FIRMWARE_VERSION "1.9.0-readiness-gate"

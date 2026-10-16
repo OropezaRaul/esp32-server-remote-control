@@ -92,7 +92,12 @@ menu "ESP32 Remote Control"
         config ML_ACME_CONTACT_EMAIL
             string "ACME account contact email"
             default ""
-            depends on ML_ACME_ENABLED
+            # SIN "depends on ML_ACME_ENABLED" a proposito: el
+            # components/microlink/src/ml_acme.c se compila siempre (esta en el
+            # SRCS del CMakeLists) y usa CONFIG_ML_ACME_CONTACT_EMAIL. Con el
+            # simbolo escondido por el funnel apagado, un clone limpio del repo
+            # no compila (undeclared). El valor vacio es el comportamiento correcto
+            # cuando ACME no se usa.
             help
                 Optional but recommended (expiry notices). Must be a real
                 domain or Let's Encrypt rejects newAccount (invalidContact).
@@ -177,40 +182,41 @@ menu "ESP32 Remote Control"
                 Long-poll timeout for getUpdates. 20s matches Telegram default.
     endmenu
 
-    menu "Target Server Configuration"
+    menu "cocopa01 Configuration"
         config COCOPA01_IP
-            string "Target Server LAN IP"
+            string "cocopa01 LAN IP"
             default "192.168.1.100"
 
         config COCOPA01_TS_IP
-            string "Target Server Tailscale IP"
+            string "cocopa01 Tailscale IP"
             default "100.64.0.2"
             help
-                Tailscale IP of the target server. Used by the HTTP proxy to
-                issue a 302 redirect from the ESP32 URL to the server URL.
+                IP de Tailscale de cocopa01. Usado por el proxy HTTP para
+                hacer 302 redirect desde la URL del ESP32 a la URL del
+                servidor (mantiene cookies de sesión funcionando).
 
         config COCOPA01_HTTP_PORT
-            int "Target Server HTTP daemon port"
+            int "cocopa01 HTTP port"
             default 9999
 
         config COCOPA01_MONITOR_PORT
-            int "Target Server monitor HTTP port"
+            int "cocopa01 monitor HTTP port"
             default 8085
             help
-                Port where the monitor HTTP server is listening on the server.
+                Port where CocopaMonitor HTTP server is listening on cocopa01.
 
         config COCOPA01_SSH_PORT
-            int "Target Server SSH port"
+            int "cocopa01 SSH port"
             default 22
 
         config COCOPA01_SHUTDOWN_SECRET
             string "Shutdown endpoint shared secret"
             default ""
             help
-                Must match the shared secret on the target server.
+                Must match /etc/esp32-shutdown/secret on cocopa01.
 
         config COCOPA01_MAC_HEX
-            string "Target Server MAC address (for Wake-on-LAN)"
+            string "cocopa01 MAC address"
             default "00:11:22:33:44:55"
 
         config COCOPA01_WOL_PORT
@@ -226,11 +232,13 @@ menu "ESP32 Remote Control"
             default 30
 
         config COCOPA01_FUNNEL_URL
-            string "Tailscale Funnel URL for target server"
+            string "Tailscale Funnel URL for cocopa01"
             default ""
             help
-                Public Tailscale Funnel URL that points to the target server.
-                Example: "https://server.your-tailnet.ts.net"
+                Public Tailscale Funnel URL that points to cocopa01.
+                When a request arrives on the ESP32's :443 Funnel server,
+                /gate redirects here (302) instead of the internal Tailscale IP.
+                Example: "https://server-abc.tailXXXX.ts.net"
                 Leave empty to disable Funnel redirect (falls back to Tailscale IP).
 
         config GATE_COCOPA_URL
@@ -239,18 +247,54 @@ menu "ESP32 Remote Control"
             help
                 Base URL for the /cocopa/* path-based redirect. The ESP32 strips
                 the /cocopa prefix and redirects (302) to this URL + rest-of-path.
-                WOL is sent to server before redirect.
-                Example: "https://server.your-tailnet.ts.net"
+                WOL is sent to cocopa01 before redirect.
+                Example: "https://server.tailXXXX.ts.net"
                 Leave empty to make /cocopa/* return 503.
 
-        config GATE_CITAS_URL
-            string "Redirect target for /citas/* handler"
+        config GATE_KIUBART_URL
+            string "Redirect target for /kiubart/* handler"
+            default "https://server.tailXXXX.ts.net/app"
+            help
+                Base URL for the /kiubart/* path-based redirect. The ESP32 strips
+                the /kiubart prefix and redirects (302) to this URL + rest-of-path.
+                WOL is sent to cocopa01 before redirect.
+                Example: "https://server.tailXXXX.ts.net/app"
+                Leave empty to make /kiubart/* return 503.
+        config COCOPA01_TS_HOSTNAME
+            string "cocopa01 Tailscale hostname (MagicDNS)"
+            default "server.tailXXXX.ts.net"
+            help
+                Nombre publico de cocopa01. La sonda de readiness (ready_probe.c)
+                manda el GET por la IP de la tailnet pero con este Host, que es
+                lo que selecciona el virtual host de nginx y lo que el tunel
+                reenvia. Se deriva de CONFIG_GATE_COCOPA_URL si esa URL esta
+                llena; este valor es el respaldo.
+
+        config COCOPA01_FUNNEL_PORT
+            int "Tailscale Funnel listener port on cocopa01"
+            default 443
+            help
+                Puerto donde tailscaled de cocopa01 escucha el Funnel. Si este
+                puerto no esta abierto, el tunel devuelve 502 al cliente.
+
+        config COCOPA01_PROXY_PORT
+            int "nginx reverse proxy port on cocopa01"
+            default 8080
+            help
+                Puerto del backend que el Funnel reenvia. La sonda de readiness
+                le hace un GET con el Host publico: si responde, el tunel tambien
+                va a poder servir. Mismo puerto que usa cocopa01_web_alive().
+
+        config ESP32_READY_NOTIFY_SECRET
+            string "Secret for GET /notify/ready (cocopa01 -> ESP32)"
             default ""
             help
-                Base URL for the /citas/* path-based redirect. The ESP32 strips
-                the /citas prefix and redirects (302) to this URL + rest-of-path.
-                Example: "https://service.your-domain.com"
-                Leave empty to make /citas/* return 503.
+                Permite que el propio cocopa01 avise que ya esta listo en vez de
+                que el ESP32 lo descubra sondeando. Lo llama el servicio
+                cocopa-ready-notify.service (tools/cocopa01/) al terminar de
+                verificarse a si mismo. Si queda vacio el endpoint responde 503
+                y el ESP32 sigue funcionando solo con sus propias sondas.
+                OJO: con la cadena vacia el endpoint NO se habilita.
     endmenu
 
     # La versión del firmware NO va más en Kconfig: vive en main/version.h.
@@ -378,7 +422,7 @@ menu "ESP32 Remote Control"
 
         config ML_DEVICE_NAME
             string "Tailscale device name (ML internal)"
-            default "esp32-cocopa01"
+            default "esp32-server-ctrl"
 
         config ML_PRIORITY_PEER_IP
             string "Priority peer VPN IP"
