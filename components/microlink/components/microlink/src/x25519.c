@@ -1,13 +1,13 @@
 // Taken from https://sourceforge.net/p/strobe (MIT Licence)
-/**
- * @cond internal
- * @file x25519.c
- * @copyright
- *   Copyright (c) 2015-2016 Cryptography Research, Inc.  \n
- *   Released under the MIT License.  See LICENSE.txt for license information.
- * @author Mike Hamburg
- * @brief Key exchange and signatures based on X25519.
- */
+
+
+
+
+
+
+
+
+
 #pragma GCC diagnostic ignored "-Wstringop-overread"
 
 #include <stdint.h>
@@ -65,7 +65,7 @@ static inline limb_t umaal(
     return tmp;
 }
 
-/* These functions are implemented in terms of umaal on ARM */
+
 static inline limb_t adc(limb_t *carry, limb_t acc, limb_t mand) {
     dlimb_t total = (dlimb_t)*carry + acc + mand;
     *carry = total>>X25519_WBITS;
@@ -78,11 +78,11 @@ static inline limb_t adc0(limb_t *carry, limb_t acc) {
     return total;
 }
 
-/* Precondition: carry is small.
- * Invariant: result of propagate is < 2^255 + 1 word
- * In particular, always less than 2p.
- * Also, output x >= min(x,19)
- */
+
+
+
+
+
 static void propagate(fe x, limb_t over) {
     unsigned i;
     over = x[NLIMBS-1]>>(X25519_WBITS-1) | over<<1;
@@ -132,7 +132,7 @@ swapout(uint8_t *out, limb_t *x) {
 }
 
 static void mul(fe out, const fe a, const fe b, unsigned nb) {
-    /* GCC at least produces pretty decent asm for this, so don't need to have dedicated asm. */
+    
     limb_t accum[2*NLIMBS] = {0};
     unsigned i,j;
 
@@ -167,13 +167,13 @@ static void condswap(limb_t a[2*NLIMBS], limb_t b[2*NLIMBS], limb_t doswap) {
 }
 
 static limb_t canon(fe x) {
-    /* Canonicalize a field element x, reducing it to the least residue
-     * which is congruent to it mod 2^255-19.
-     *
-     * Precondition: x < 2^255 + 1 word
-     */
+    
 
-    /* First, add 19. */
+
+
+
+
+    
     unsigned i;
     limb_t carry0 = 19;
     for (i=0; i<NLIMBS; i++) {
@@ -181,18 +181,18 @@ static limb_t canon(fe x) {
     }
     propagate(x,carry0);
 
-    /* Here, 19 <= x2 < 2^255
-     *
-     * This is because we added 19, so before propagate it can't be less than 19.
-     * After propagate, it still can't be less than 19, because if propagate does
-     * anything it adds 19.
-     *
-     * We know that the high bit must be clear, because either the input was
-     * ~ 2^255 + one word + 19 (in which case it propagates to at most 2 words)
-     * or it was < 2^255.
-     *
-     * So now, if we subtract 19, we will get back to something in [0,2^255-19).
-     */
+    
+
+
+
+
+
+
+
+
+
+
+
     sdlimb_t carry = -19;
     limb_t res = 0;
     for (i=0; i<NLIMBS; i++) {
@@ -267,7 +267,7 @@ int x25519(uint8_t out[X25519_BYTES], const uint8_t scalar[X25519_BYTES], const 
     fe xs[5];
     x25519_core(xs,scalar,x1,clamp);
 
-    /* Precomputed inversion chain */
+    
     limb_t *x2 = xs[0], *z2=xs[1], *z3=xs[3];
     int i;
 
@@ -298,7 +298,7 @@ int x25519(uint8_t out[X25519_BYTES], const uint8_t scalar[X25519_BYTES], const 
         mul1(a,xs[steps[i].c]);
     }
 #else
-    /* Raise to the p-2 = 0x7f..ffeb */
+    
     for (i=253; i>=0; i--) {
         sqr(z3,prev);
         prev = z3;
@@ -308,8 +308,8 @@ int x25519(uint8_t out[X25519_BYTES], const uint8_t scalar[X25519_BYTES], const 
     }
 #endif
 
-    /* Here prev = z3 */
-    /* x2 /= z2 */
+    
+    
 #if X25519_MEMCPY_PARAMS
     mul1(x2,z3);
     int ret = canon(x2);
@@ -342,7 +342,7 @@ static limb_t x25519_verify_core(
 
     ladder_part1(xs);
 
-    /* Here z2 = t2^2 */
+    
     mul1(z2,other1);
     mul1(z2,other1+NLIMBS);
     mul1(z2,xo2);
@@ -353,16 +353,16 @@ static limb_t x25519_verify_core(
     sub(z3,z3,x3);
     sqr1(z3);
 
-    /* check equality */
+    
     sub(z3,z3,z2);
 
-    /* If canon(z2) then both sides are zero.
-     * If canon(z3) then the two sides are equal.
-     *
-     * Reject sigs where both sides are zero, because
-     * that can happen if an input causes the ladder to
-     * return 0/0.
-     */
+    
+
+
+
+
+
+
     return canon(z2) | ~canon(z3);
 }
 
@@ -385,13 +385,13 @@ static void sc_montmul (
     const scalar_t a,
     const scalar_t b
 ) {
-   /**
-    * OK, so carry bounding.  We're using a high carry, so that the
-    * inputs don't have to be reduced.
-    *
-    * First montmul: output < (M^2 + Mp)/M = M+p, subtract p, < M.  This gets rid of high carry.
-    * Second montmul, by r^2 mod p < p: output < (Mp + Mp)/M = 2p, subtract p, < p, done.
-    */
+   
+
+
+
+
+
+
     unsigned i,j;
     limb_t hic = 0;
     for (i=0; i<NLIMBS; i++) {
@@ -405,11 +405,11 @@ static void sc_montmul (
             if (j>0) out[j-1] = acc;
         }
 
-        /* Add two carry registers and high carry */
+        
         out[NLIMBS-1] = adc(&hic, carry, carry2);
     }
 
-    /* Reduce */
+    
     sdlimb_t scarry = 0;
     for (i=0; i<NLIMBS; i++) {
         out[i] = scarry = scarry + out[i] - sc_p[i];
@@ -429,7 +429,7 @@ void x25519_sign_p2 (
     const uint8_t eph_secret[X25519_BYTES],
     const uint8_t secret[X25519_BYTES]
 ) {
-    /* FUTURE memory/code size: just make eph_secret non-const? */
+    
     scalar_t scalar1;
     swapin(scalar1,eph_secret);
 

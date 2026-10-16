@@ -13,21 +13,21 @@
 #include <sys/time.h>
 #include <nvs_flash.h>
 
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "automation.h"
 #include "system_health.h"
 
 #include "sdkconfig.h"
 
-#define NVS_NAMESPACE_STATE   "cocopa01"
+#define NVS_NAMESPACE_STATE   "server"
 #define NVS_KEY_BOOT_TIME     "boot_time"
 
 static const char *TAG = "state";
 
-static volatile cocopa01_state_t g_state = COCOPA01_STATE_UNKNOWN;
+static volatile server_state_t g_state = SERVER_STATE_UNKNOWN;
 static volatile uint32_t g_state_entered_ms = 0;
 static volatile uint32_t g_last_known_on_ms = 0;
-static volatile uint32_t g_cocopa01_boot_time = 0;
+static volatile uint32_t g_server_boot_time = 0;
 static volatile uint32_t g_last_poll_ms = 0;
 static volatile bool g_last_poll_tcp_alive = false;
 // Momento (ms) en el que se observo por ultima vez un boot_time DISTINTO al
@@ -74,21 +74,21 @@ static uint32_t load_persisted_boot_time(void) {
     return v;
 }
 
-uint32_t state_cocopa01_boot_time(void) { return g_cocopa01_boot_time; }
+uint32_t state_server_boot_time(void) { return g_server_boot_time; }
 
 // Registra un boot_time leido EN VIVO por HTTP. Si difiere del que teniamos,
-// cocopa01 arranco de cero (no es un resume desde S3) y hay que esperar a que
+// server arranco de cero (no es un resume desde S3) y hay que esperar a que
 // el stack web levante antes de mandar al cliente.
 static void note_boot_time_live(uint32_t new_bt) {
     if (new_bt == 0) return;
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (new_bt != g_cocopa01_boot_time) {
-        ESP_LOGI(TAG, "cocopa01 boot_time changed: %u -> %u (arranque en frio, "
+    if (new_bt != g_server_boot_time) {
+        ESP_LOGI(TAG, "server boot_time changed: %u -> %u (arranque en frio, "
                       "esperando a que el stack web levante)",
-                 (unsigned)g_cocopa01_boot_time, (unsigned)new_bt);
+                 (unsigned)g_server_boot_time, (unsigned)new_bt);
         g_boot_changed_ms = now;
         g_cold_boot_since_on_ms = g_state_entered_ms;   // informativo
-        g_cocopa01_boot_time = new_bt;
+        g_server_boot_time = new_bt;
         persist_boot_time(new_bt);
     }
     g_boot_verified_live = true;
@@ -106,7 +106,7 @@ uint32_t state_http_stats(uint32_t *attempts, uint32_t *ok, uint32_t *err, int32
 }
 
 bool state_stack_settled(uint32_t cold_boot_min_ms) {
-    if (g_state != COCOPA01_STATE_ON) return false;
+    if (g_state != SERVER_STATE_ON) return false;
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
     if (g_boot_verified_live && g_boot_confirmed_for_on) {
@@ -141,7 +141,7 @@ bool state_stack_settled(uint32_t cold_boot_min_ms) {
     if (on_ms == 0) return false;
     return (uint32_t)(now - on_ms) >= (cold_boot_min_ms + 30000UL);
 }
-// true cuando cocopa01 NUNCA se apago desde el ultimo OFF: el stack sigue en pie
+// true cuando server NUNCA se apago desde el ultimo OFF: el stack sigue en pie
 // y no hay nada que esperar. Es la via rapida (sin esperas) del resume desde S3.
 //
 // Por que NO basta con state_stack_settled(0): esa funcion exige un minimo de
@@ -150,7 +150,7 @@ bool state_stack_settled(uint32_t cold_boot_min_ms) {
 // nunca cayo" (que se sabe leyendo el boot_time) del "ya paso suficiente tiempo"
 // (que era el reloj que se elimina).
 bool state_stack_never_stopped(void) {
-    if (g_state != COCOPA01_STATE_ON) return false;
+    if (g_state != SERVER_STATE_ON) return false;
     if (!g_boot_verified_live || !g_boot_confirmed_for_on) return false;
     // g_boot_changed_ms == 0 -> el boot_time leido en vivo es el mismo que
     // teniamos: nadie arranco de cero, el stack sigue en pie desde antes.
@@ -160,8 +160,8 @@ bool state_stack_never_stopped(void) {
 uint32_t state_last_poll_ms(void) { return g_last_poll_ms; }
 bool state_last_poll_tcp_alive(void) { return g_last_poll_tcp_alive; }
 
-uint32_t state_cocopa01_uptime_s(void) {
-    uint32_t bt = g_cocopa01_boot_time;
+uint32_t state_server_uptime_s(void) {
+    uint32_t bt = g_server_boot_time;
     if (bt == 0) return 0;
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -169,38 +169,38 @@ uint32_t state_cocopa01_uptime_s(void) {
     return (now > bt) ? (now - bt) : 0;
 }
 
-const char *cocopa01_state_str(cocopa01_state_t s) {
+const char *server_state_str(server_state_t s) {
     switch (s) {
-        case COCOPA01_STATE_OFF:     return "OFF";
-        case COCOPA01_STATE_SUSPEND: return "SUSPEND";
-        case COCOPA01_STATE_ON:      return "ON";
+        case SERVER_STATE_OFF:     return "OFF";
+        case SERVER_STATE_SUSPEND: return "SUSPEND";
+        case SERVER_STATE_ON:      return "ON";
         default:                     return "UNKNOWN";
     }
 }
 
-cocopa01_state_t state_get(void) { return g_state; }
+server_state_t state_get(void) { return g_state; }
 uint32_t state_entered_at_ms(void) { return g_state_entered_ms; }
 uint32_t state_last_known_on_ms(void) { return g_last_known_on_ms; }
 
-void state_set(cocopa01_state_t s) {
+void state_set(server_state_t s) {
     if (s == g_state) return;
     // Una vez OFF, solo ON puede sacarnos de ahí. Esto evita que el poll
     // reporte SUSPEND transitorio durante el shutdown y reabra el ciclo
     // de auto-off.
-    if (g_state == COCOPA01_STATE_OFF && s != COCOPA01_STATE_ON) {
+    if (g_state == SERVER_STATE_OFF && s != SERVER_STATE_ON) {
         ESP_LOGD(TAG, "ignoring transition OFF -> %s (would re-trigger automation)",
-                 cocopa01_state_str(s));
+                 server_state_str(s));
         return;
     }
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     ESP_LOGI(TAG, "state %s -> %s",
-             cocopa01_state_str(g_state), cocopa01_state_str(s));
-    cocopa01_state_t prev = g_state;
+             server_state_str(g_state), server_state_str(s));
+    server_state_t prev = g_state;
     g_state = s;
     g_state_entered_ms = now;
-    if (s == COCOPA01_STATE_ON) {
+    if (s == SERVER_STATE_ON) {
         g_last_known_on_ms = now;
-    } else if (s == COCOPA01_STATE_OFF) {
+    } else if (s == SERVER_STATE_OFF) {
         // Al apagar explícitamente a OFF (o por /off), reseteamos
         // g_last_known_on_ms para que la heurística de query_state
         // NUNCA degrade un equipo apagado a SUSPEND (S3).
@@ -216,21 +216,21 @@ void state_set(cocopa01_state_t s) {
     // Ademas se limpia la marca de "arranque en frio": sin esto, un resume
     // desde S3 posterior a un arranque en frio seguia pagando la espera de
     // 45 s (el timestamp viejo hacia que todo ON posterior se creyera frio).
-    if (s != COCOPA01_STATE_ON) {
+    if (s != SERVER_STATE_ON) {
         g_boot_confirmed_for_on = false;
         g_boot_changed_ms = 0;
         g_cold_boot_since_on_ms = 0;
     }
     // Cualquier transición a ON (OFF->ON, SUSPEND->ON, UNKNOWN->ON) implica
     // que alguien prendió o despertó el servidor → resetear timer de inactividad.
-    if (s == COCOPA01_STATE_ON && prev != COCOPA01_STATE_ON) {
+    if (s == SERVER_STATE_ON && prev != SERVER_STATE_ON) {
         automation_kick();
     }
 }
 
 void state_mark_known_on(void) {
     // Si ya está confirmado ON, nada que hacer
-    if (g_state == COCOPA01_STATE_ON) return;
+    if (g_state == SERVER_STATE_ON) return;
     // NO forzar g_state = ON ni g_last_known_on_ms = now antes de que
     // el servidor responda TCP: hacerlo rompía la protección OFF->SUSPEND
     // si el boot tarda más de lo que tarda el siguiente poll en correr.
@@ -238,21 +238,21 @@ void state_mark_known_on(void) {
     automation_kick();
 }
 
-// GET /state a cocopa01 via BSD sockets. Devuelve >=0 con bytes escritos en
+// GET /state a server via BSD sockets. Devuelve >=0 con bytes escritos en
 // buf (el body ya extraido, sin headers HTTP), o <0 en error/timeout.
 // Usado tanto por query_http_state (parsea el campo "state") como por
 // refresh_boot_time (parsea el campo "boot_time").
 //
 // IMPORTANTE: en lwIP (IDF v5.3), connect() BLOQUEANTE no respeta los
 // timeouts SO_SNDTIMEO/SO_RCVTIMEO del socket. Si la IP destino no
-// responde ARP/SYN (caso típico: cocopa01 apagado), connect() puede
+// responde ARP/SYN (caso típico: server apagado), connect() puede
 // quedarse colgado minutos retransmitiendo. Por eso:
 //   1) creamos el socket
 //   2) lo pasamos a O_NONBLOCK
 //   3) hacemos connect() no-bloqueante (devuelve -1 con errno=EINPROGRESS)
 //   4) esperamos con select() + timeout duro de 2s
 //   5) chequeamos SO_ERROR para detectar fallos reales (ECONNREFUSED, etc.)
-static int cocopa01_http_get_body(char *buf, int buf_size) {
+static int server_http_get_body(char *buf, int buf_size) {
     if (buf == NULL || buf_size <= 16) return -1;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -268,8 +268,8 @@ static int cocopa01_http_get_body(char *buf, int buf_size) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(CONFIG_COCOPA01_HTTP_PORT);
-    addr.sin_addr.s_addr = inet_addr(CONFIG_COCOPA01_IP);
+    addr.sin_port = htons(CONFIG_SERVER_HTTP_PORT);
+    addr.sin_addr.s_addr = inet_addr(CONFIG_SERVER_IP);
 
     int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) {
@@ -313,7 +313,7 @@ static int cocopa01_http_get_body(char *buf, int buf_size) {
         "Connection: close\r\n"
         "User-Agent: esp32-state-poll/1.0\r\n"
         "\r\n",
-        CONFIG_COCOPA01_IP, CONFIG_COCOPA01_SHUTDOWN_SECRET);
+        CONFIG_SERVER_IP, CONFIG_SERVER_SHUTDOWN_SECRET);
     if (req_len <= 0 || req_len >= (int)sizeof(req)) {
         close(sock);
         return -1;
@@ -360,11 +360,11 @@ static int cocopa01_http_get_body(char *buf, int buf_size) {
 static void refresh_boot_time(void) {
     char buf[512];
     s_state_http_attempts++;
-    int body_len = cocopa01_http_get_body(buf, sizeof(buf));
+    int body_len = server_http_get_body(buf, sizeof(buf));
     s_state_http_last_len = body_len;
     if (body_len <= 0) {
         s_state_http_err++;
-        ESP_LOGW(TAG, "refresh_boot_time: /state ilegible desde cocopa01 (body_len=%d)",
+        ESP_LOGW(TAG, "refresh_boot_time: /state ilegible desde server (body_len=%d)",
                  body_len);
         return;
     }
@@ -390,14 +390,14 @@ static void refresh_boot_time(void) {
         bool is_act = (cJSON_IsBool(act) && cJSON_IsTrue(act)) ||
                       (cJSON_IsNumber(act) && act->valueint != 0);
         if (is_act) {
-            ESP_LOGI(TAG, "cocopa01 reports user activity (kernel packet/socket counter) -> automation_kick");
+            ESP_LOGI(TAG, "server reports user activity (kernel packet/socket counter) -> automation_kick");
             automation_kick();
         }
     }
     cJSON_Delete(doc);
 }
 
-// Implementacion con BSD sockets directos via el helper cocopa01_http_get_body.
+// Implementacion con BSD sockets directos via el helper server_http_get_body.
 // ANTES: usaba esp_http_client (con perform() u open+fetch_headers), pero
 // en IDF v5.3 el primer poll tras un RESET se colgaba 60-80 segundos
 // antes de retornar error (logs `esp-tls: [sock=60] select() timeout`).
@@ -411,7 +411,7 @@ static const char *query_http_state(void) {
     result_buf[0] = 0;
 
     char buf[512];
-    int body_len = cocopa01_http_get_body(buf, sizeof(buf));
+    int body_len = server_http_get_body(buf, sizeof(buf));
     if (body_len < 0) {
         // connect falló o timeout o status != 200
         ESP_LOGD(TAG, "[STATE] HTTP get failed (no body, treating as TIMEOUT)");
@@ -452,7 +452,7 @@ static const char *query_http_state(void) {
         bool is_act = (cJSON_IsBool(act_node) && cJSON_IsTrue(act_node)) ||
                       (cJSON_IsNumber(act_node) && act_node->valueint != 0);
         if (is_act) {
-            ESP_LOGI(TAG, "cocopa01 reports user activity (kernel packet/socket counter) -> automation_kick");
+            ESP_LOGI(TAG, "server reports user activity (kernel packet/socket counter) -> automation_kick");
             automation_kick();
         }
     }
@@ -468,30 +468,30 @@ static const char *query_http_state(void) {
 // que dejaba el estado en UNKNOWN tras un RESET si el primer HTTP poll
 // fallaba por timeout. Ahora: cualquier fallo HTTP -> TIMEOUT-equivalente,
 // y la heuristica LAST_ON_HEURISTIC_MS decide OFF vs SUSPEND.
-static cocopa01_state_t query_state(void) {
+static server_state_t query_state(void) {
     g_last_poll_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (cocopa01_tcp_alive(400)) {
+    if (server_tcp_alive(400)) {
         g_last_poll_tcp_alive = true;
-        return COCOPA01_STATE_ON;
+        return SERVER_STATE_ON;
     }
     g_last_poll_tcp_alive = false;
 
     const char *http_result = query_http_state();
 
-    if (strcmp(http_result, "ON") == 0) return COCOPA01_STATE_ON;
-    if (strcmp(http_result, "OFF") == 0) return COCOPA01_STATE_OFF;
+    if (strcmp(http_result, "ON") == 0) return SERVER_STATE_ON;
+    if (strcmp(http_result, "OFF") == 0) return SERVER_STATE_OFF;
 
-    // Cualquier fallo (TIMEOUT, ERR_*, etc.) se trata igual: cocopa01 no
+    // Cualquier fallo (TIMEOUT, ERR_*, etc.) se trata igual: server no
     // responde. La decision OFF vs SUSPEND la da LAST_ON_HEURISTIC_MS:
     // - si nunca vimos ON o hace >5min -> OFF (realmente apagado)
     // - si hace <5min -> SUSPEND (puede estar durmiendo S3)
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     if (http_result != NULL && strncmp(http_result, "ERR_", 4) != 0 &&
-        g_state != COCOPA01_STATE_OFF &&
+        g_state != SERVER_STATE_OFF &&
         g_last_known_on_ms != 0 && (now - g_last_known_on_ms) < LAST_ON_HEURISTIC_MS) {
         ESP_LOGW(TAG, "[STATE] poll returned '%s' but recently ON, treating as SUSPEND",
                  http_result);
-        return COCOPA01_STATE_SUSPEND;
+        return SERVER_STATE_SUSPEND;
     }
     // Fallo limpio (TIMEOUT) o ERR_* -> OFF. Esto elimina UNKNOWN como
     // estado permanente: si el poll falla por cualquier motivo, marcamos
@@ -499,7 +499,7 @@ static cocopa01_state_t query_state(void) {
     ESP_LOGD(TAG, "[STATE] poll result='%s', treating as OFF (last_on=%u ms ago)",
              http_result ? http_result : "?",
              (g_last_known_on_ms != 0) ? (unsigned)(now - g_last_known_on_ms) : 0);
-    return COCOPA01_STATE_OFF;
+    return SERVER_STATE_OFF;
 }
 
 static TaskHandle_t s_state_task = NULL;
@@ -515,7 +515,7 @@ void state_trigger_fast_poll(void) {
 
 bool state_is_fast_polling(void) {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    return (now < s_fast_poll_until_ms) && (g_state != COCOPA01_STATE_ON);
+    return (now < s_fast_poll_until_ms) && (g_state != SERVER_STATE_ON);
 }
 
 void state_poll_task(void *arg) {
@@ -524,29 +524,29 @@ void state_poll_task(void *arg) {
     // First poll after a short delay so we don't block app_main() with HTTP I/O
     // (which would trip the task watchdog).
     vTaskDelay(pdMS_TO_TICKS(2000));
-    cocopa01_state_t new_state = query_state();
-    if (new_state != COCOPA01_STATE_UNKNOWN) {
+    server_state_t new_state = query_state();
+    if (new_state != SERVER_STATE_UNKNOWN) {
         state_set(new_state);
     }
     // boot_time solo importa cuando el server está ON; si está OFF/SUSPEND no hace falta HTTP
-    if (g_state == COCOPA01_STATE_ON || g_cocopa01_boot_time == 0) {
+    if (g_state == SERVER_STATE_ON || g_server_boot_time == 0) {
         refresh_boot_time();
     }
     while (1) {
         system_health_heartbeat(HEALTH_CHANNEL_STATE);
 
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        bool fast = (now < s_fast_poll_until_ms) && (g_state != COCOPA01_STATE_ON);
-        uint32_t delay_ms = fast ? 2500 : (CONFIG_COCOPA01_POLL_INTERVAL_S * 1000);
+        bool fast = (now < s_fast_poll_until_ms) && (g_state != SERVER_STATE_ON);
+        uint32_t delay_ms = fast ? 2500 : (CONFIG_SERVER_POLL_INTERVAL_S * 1000);
 
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
 
         system_health_heartbeat(HEALTH_CHANNEL_STATE);
-        cocopa01_state_t new_state = query_state();
-        if (new_state != COCOPA01_STATE_UNKNOWN) {
+        server_state_t new_state = query_state();
+        if (new_state != SERVER_STATE_UNKNOWN) {
             state_set(new_state);
         }
-        if (g_state == COCOPA01_STATE_ON || g_cocopa01_boot_time == 0) {
+        if (g_state == SERVER_STATE_ON || g_server_boot_time == 0) {
             refresh_boot_time();
         }
     }
@@ -554,22 +554,22 @@ void state_poll_task(void *arg) {
 
 void state_init(void) {
     ESP_LOGI(TAG, "state init (lazy — first poll in poll task)");
-    g_state = COCOPA01_STATE_UNKNOWN;
+    g_state = SERVER_STATE_UNKNOWN;
     g_state_entered_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     g_last_known_on_ms = 0;
     g_last_poll_ms = 0;
     g_last_poll_tcp_alive = false;
-    g_cocopa01_boot_time = load_persisted_boot_time();
+    g_server_boot_time = load_persisted_boot_time();
     // El boot_time de NVS es orientativo hasta que hagamos una lectura en vivo
     // de /state en este boot: recien ahi sabemos si el server arranco de cero.
     g_boot_changed_ms = 0;
     g_boot_verified_live = false;
     g_boot_confirmed_for_on = false;
     g_cold_boot_since_on_ms = 0;
-    if (g_cocopa01_boot_time != 0) {
-        ESP_LOGI(TAG, "loaded persisted boot_time: %u", (unsigned)g_cocopa01_boot_time);
+    if (g_server_boot_time != 0) {
+        ESP_LOGI(TAG, "loaded persisted boot_time: %u", (unsigned)g_server_boot_time);
     }
     // No blocking HTTP I/O here. state_poll_task does the first poll 2s after
     // it starts; app_main() returns immediately so the TWDT doesn't fire.
-    ESP_LOGI(TAG, "initial state: %s", cocopa01_state_str(g_state));
+    ESP_LOGI(TAG, "initial state: %s", server_state_str(g_state));
 }

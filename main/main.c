@@ -18,7 +18,7 @@
 
 #include "wifi.h"
 #include "wol.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "ready_probe.h"
 #include "state.h"
 #include "telegram.h"
@@ -90,20 +90,20 @@ static void handle_serial_command(char *line) {
             ESP_LOGI(TAG, "wake solicitado desde serial: %s", wake_status_text());
         }
     } else if (strcmp(line, "off") == 0) {
-        ESP_LOGI(TAG, "cocopa01 TCP/22 alive: %s",
-                 cocopa01_tcp_alive(2000) ? "YES" : "NO");
-        if (cocopa01_send_off() == ESP_OK) {
-            state_set(COCOPA01_STATE_OFF);
+        ESP_LOGI(TAG, "server TCP/22 alive: %s",
+                 server_tcp_alive(2000) ? "YES" : "NO");
+        if (server_send_off() == ESP_OK) {
+            state_set(SERVER_STATE_OFF);
         }
     } else if (strcmp(line, "suspend") == 0) {
-        ESP_LOGI(TAG, "cocopa01 TCP/22 alive: %s",
-                 cocopa01_tcp_alive(2000) ? "YES" : "NO");
-        if (cocopa01_send_suspend() == ESP_OK) {
-            state_set(COCOPA01_STATE_SUSPEND);
+        ESP_LOGI(TAG, "server TCP/22 alive: %s",
+                 server_tcp_alive(2000) ? "YES" : "NO");
+        if (server_send_suspend() == ESP_OK) {
+            state_set(SERVER_STATE_SUSPEND);
         }
     } else if (strcmp(line, "state") == 0) {
         ESP_LOGI(TAG, "state: %s",
-                 cocopa01_state_str(state_get()));
+                 server_state_str(state_get()));
     } else if (strncmp(line, "tailscale", 9) == 0) {
         char *arg = line + 9;
         while (*arg && isspace((unsigned char)*arg)) arg++;
@@ -174,9 +174,9 @@ static void handle_serial_command(char *line) {
         ESP_LOGI(TAG, "Commands:");
         ESP_LOGI(TAG, "  info              - system info");
         ESP_LOGI(TAG, "  wake              - send WOL magic packet");
-        ESP_LOGI(TAG, "  off               - send /off to cocopa01");
-        ESP_LOGI(TAG, "  suspend           - send /suspend to cocopa01");
-        ESP_LOGI(TAG, "  state             - print current cocopa01 state");
+        ESP_LOGI(TAG, "  off               - send /off to server");
+        ESP_LOGI(TAG, "  suspend           - send /suspend to server");
+        ESP_LOGI(TAG, "  state             - print current server state");
         ESP_LOGI(TAG, "  tailscale status  - Tailscale state + watchdog status");
         ESP_LOGI(TAG, "  tailscale rebind  - force Tailscale rebind (lightweight, diagnostic only)");
         ESP_LOGI(TAG, "  tailscale reset   - force ESP32 reboot (the watchdog's recovery action)");
@@ -277,7 +277,7 @@ void app_main(void) {
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         // PELIGRO: este erase borra TODA la NVS — namespace `schedule`
         // (wake/off programados), `automation` (idle timers), `portmap`
-        // (mappings TCP), `cocopa01/boot_time`, y los blobs de microlink
+        // (mappings TCP), `server/boot_time`, y los blobs de microlink
         // (peers cacheados, cert funnel, estado ACME). Después de este
         // log el usuario va a tener que re-configurar `/schedule`,
         // `/autoset`, `/portmap` desde Telegram. Marcamos el flag
@@ -317,14 +317,14 @@ void app_main(void) {
 
     {
         // Supervisor de Auto-WOL: debe existir ANTES de web_server_start para
-        // que ningun handler (/cocopa, /wol...) lo encuentre a medio iniciar.
+        // que ningun handler (/app, /wol...) lo encuentre a medio iniciar.
         esp_err_t wk_err = wake_init();
         if (wk_err != ESP_OK) {
             ESP_LOGE(TAG, "wake_init failed: %s", esp_err_to_name(wk_err));
         }
 
         // Sonda de readiness: tambien antes de web_server_start, porque los
-        // handlers (/cocopa, /ready) leen su latch. Es la pieza que reemplaza
+        // handlers (/app, /ready) leen su latch. Es la pieza que reemplaza
         // la espera por reloj de la 1.8.2.
         esp_err_t rd_err = ready_init();
         if (rd_err != ESP_OK) {

@@ -16,7 +16,7 @@ idf_component_register(
         "wake_logic.c"
         "ready_probe.c"
         "ready_logic.c"
-        "cocopa01_client.c"
+        "server_client.c"
         "state.c"
         "telegram.c"
         "web_server.c"

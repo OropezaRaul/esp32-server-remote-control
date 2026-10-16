@@ -1,17 +1,17 @@
-/**
- * @file ml_peer_nvs.c
- * @brief Peer NVS Persistence - Cache peers across reboots
- *
- * Stores peer data (public key, disco key, VPN IP, endpoints) in NVS flash.
- * On boot, wg_mgr loads cached peers immediately so DISCO probing can start
- * before the control plane registration completes.
- *
- * Storage: single NVS blob containing a packed array of peer entries.
- * Supports up to ML_NVS_MAX_PEERS (64) with LRU eviction when full.
- * The entire table is written as one blob (~5.8KB max) for efficiency.
- *
- * Reference: microlink v1 microlink_peer_registry.c
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "microlink_internal.h"
 #include "esp_log.h"
@@ -26,34 +26,34 @@ static const char *TAG = "ml_peer_nvs";
 #ifdef CONFIG_ML_NVS_MAX_PEERS
 #define ML_NVS_MAX_PEERS    CONFIG_ML_NVS_MAX_PEERS
 #else
-#define ML_NVS_MAX_PEERS    64  /* Fallback default */
+#define ML_NVS_MAX_PEERS    64  
 #endif
 
-/* Compact peer storage (92 bytes per entry) */
-typedef struct __attribute__((packed)) {
-    uint32_t vpn_ip;                /* 4 bytes */
-    uint8_t public_key[32];         /* 32 bytes */
-    uint8_t disco_key[32];          /* 32 bytes */
-    uint16_t derp_region;           /* 2 bytes */
-    struct {
-        uint32_t ip;                /* 4 bytes */
-        uint16_t port;              /* 2 bytes */
-    } __attribute__((packed)) endpoints[2]; /* 12 bytes */
-    uint8_t endpoint_count;         /* 1 byte */
-    char hostname_short[7];         /* 7 bytes (truncated) */
-    uint16_t lru_counter;           /* 2 bytes — higher = more recently used */
-} peer_nvs_entry_t;                 /* Total: 92 bytes */
 
-/* In-memory table (loaded from NVS blob) */
 typedef struct __attribute__((packed)) {
-    uint16_t count;                 /* Number of valid entries */
-    uint16_t lru_clock;             /* Monotonic LRU counter */
+    uint32_t vpn_ip;                
+    uint8_t public_key[32];         
+    uint8_t disco_key[32];          
+    uint16_t derp_region;           
+    struct {
+        uint32_t ip;                
+        uint16_t port;              
+    } __attribute__((packed)) endpoints[2]; 
+    uint8_t endpoint_count;         
+    char hostname_short[7];         
+    uint16_t lru_counter;           
+} peer_nvs_entry_t;                 
+
+
+typedef struct __attribute__((packed)) {
+    uint16_t count;                 
+    uint16_t lru_clock;             
     peer_nvs_entry_t entries[ML_NVS_MAX_PEERS];
 } peer_nvs_table_t;
 
 static nvs_handle_t s_nvs = 0;
 static bool s_initialized = false;
-static peer_nvs_table_t *s_table = NULL;  /* PSRAM-allocated working copy */
+static peer_nvs_table_t *s_table = NULL;  
 
 static void load_table(void) {
     if (!s_table) {
@@ -110,10 +110,10 @@ void ml_peer_nvs_deinit(void) {
 esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
     if (!s_initialized || !peer || !s_table) return ESP_ERR_INVALID_STATE;
 
-    /* Advance LRU clock */
+    
     s_table->lru_clock++;
 
-    /* Build entry */
+    
     peer_nvs_entry_t entry;
     memset(&entry, 0, sizeof(entry));
 
@@ -123,7 +123,7 @@ esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
     entry.derp_region = peer->derp_region;
     entry.lru_counter = s_table->lru_clock;
 
-    /* Store up to 2 endpoints */
+    
     int stored = 0;
     for (int i = 0; i < peer->endpoint_count && stored < 2; i++) {
         if (!peer->endpoints[i].is_ipv6 && peer->endpoints[i].ip != 0) {
@@ -134,10 +134,10 @@ esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
     }
     entry.endpoint_count = stored;
 
-    /* Truncated hostname for display */
+    
     strncpy(entry.hostname_short, peer->hostname, sizeof(entry.hostname_short) - 1);
 
-    /* Find existing entry by VPN IP (update) or public key (re-keyed) */
+    
     int slot = -1;
     for (int i = 0; i < s_table->count; i++) {
         if (s_table->entries[i].vpn_ip == peer->vpn_ip ||
@@ -148,15 +148,15 @@ esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
     }
 
     if (slot >= 0) {
-        /* Update existing entry */
+        
         s_table->entries[slot] = entry;
     } else if (s_table->count < ML_NVS_MAX_PEERS) {
-        /* Append new entry */
+        
         slot = s_table->count;
         s_table->entries[slot] = entry;
         s_table->count++;
     } else {
-        /* LRU eviction: find entry with lowest lru_counter */
+        
         int lru_idx = 0;
         uint16_t min_lru = s_table->entries[0].lru_counter;
         for (int i = 1; i < s_table->count; i++) {
@@ -199,11 +199,11 @@ int ml_peer_nvs_load_all(ml_peer_t *peers, int max_peers) {
         p->active = true;
         p->wg_peer_index = -1;
 
-        /* Restore hostname (truncated, ensure null-terminated) */
+        
         memcpy(p->hostname, entry->hostname_short, sizeof(entry->hostname_short));
         p->hostname[sizeof(entry->hostname_short)] = '\0';
 
-        /* Restore endpoints */
+        
         p->endpoint_count = entry->endpoint_count;
         for (int j = 0; j < entry->endpoint_count && j < 2; j++) {
             p->endpoints[j].ip = entry->endpoints[j].ip;

@@ -1,15 +1,15 @@
-/**
- * @file ml_udp.c
- * @brief MicroLink v2 UDP Socket API
- *
- * Provides simple UDP send/receive over the Tailscale VPN tunnel.
- * Uses lwIP UDP PCB bound to the WireGuard netif for encrypted transport.
- *
- * On socket creation, sends CallMeMaybe to all peers to trigger
- * peer-initiated WireGuard handshakes (NAT traversal).
- *
- * Reference: microlink v1 microlink_udp.c
- */
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "microlink_internal.h"
 #include "esp_log.h"
@@ -24,9 +24,9 @@ static const char *TAG = "ml_udp";
 #define UDP_RX_QUEUE_SIZE   4
 #define UDP_MAX_PKT_SIZE    1400
 
-/* ============================================================================
- * Internal Types
- * ========================================================================== */
+
+
+
 
 typedef struct {
     uint32_t src_ip;
@@ -41,26 +41,26 @@ struct microlink_udp_socket {
     struct udp_pcb *pcb;
     uint16_t local_port;
 
-    /* RX ring buffer */
+    
     udp_rx_pkt_t rx_queue[UDP_RX_QUEUE_SIZE];
     volatile uint8_t rx_head;
     volatile uint8_t rx_tail;
 
-    /* RX notification */
+    
     SemaphoreHandle_t rx_sem;
 
-    /* User callback */
+    
     microlink_udp_rx_cb_t rx_cb;
     void *rx_cb_data;
 
-    /* Dedicated RX task */
+    
     TaskHandle_t rx_task;
     volatile bool rx_running;
 };
 
-/* ============================================================================
- * Helpers
- * ========================================================================== */
+
+
+
 
 static void ip_to_lwip(uint32_t ml_ip, ip_addr_t *out) {
     IP4_ADDR(&out->u_addr.ip4,
@@ -80,9 +80,9 @@ static uint32_t lwip_to_ip(const ip_addr_t *addr) {
            ((ip >> 24) & 0xFF);
 }
 
-/* ============================================================================
- * lwIP UDP Callback (runs from tcpip thread)
- * ========================================================================== */
+
+
+
 
 static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                          const ip_addr_t *addr, u16_t port) {
@@ -94,7 +94,7 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     uint8_t next = (sock->rx_head + 1) % UDP_RX_QUEUE_SIZE;
     if (next == sock->rx_tail) {
-        /* Queue full */
+        
         pbuf_free(p);
         return;
     }
@@ -116,9 +116,9 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     pbuf_free(p);
 }
 
-/* ============================================================================
- * RX Task
- * ========================================================================== */
+
+
+
 
 static void udp_rx_task(void *arg) {
     microlink_udp_socket_t *sock = (microlink_udp_socket_t *)arg;
@@ -133,7 +133,7 @@ static void udp_rx_task(void *arg) {
                     pkt->valid = false;
                     sock->rx_tail = (sock->rx_tail + 1) % UDP_RX_QUEUE_SIZE;
                 } else if (!sock->rx_cb) {
-                    break;  /* No callback, leave for polling */
+                    break;  
                 } else {
                     sock->rx_tail = (sock->rx_tail + 1) % UDP_RX_QUEUE_SIZE;
                 }
@@ -144,9 +144,9 @@ static void udp_rx_task(void *arg) {
     vTaskDelete(NULL);
 }
 
-/* ============================================================================
- * Public API
- * ========================================================================== */
+
+
+
 
 microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_port) {
     if (!ml) {
@@ -175,12 +175,12 @@ microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_por
         return NULL;
     }
 
-    /* Bind to WG netif */
+    
     if (ml->wg_netif) {
         udp_bind_netif(sock->pcb, (struct netif *)ml->wg_netif);
     }
 
-    /* Bind to VPN IP + port */
+    
     ip_addr_t local_ip;
     ip_to_lwip(ml->vpn_ip, &local_ip);
 
@@ -196,7 +196,7 @@ microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_por
     sock->local_port = sock->pcb->local_port;
     udp_recv(sock->pcb, udp_recv_cb, sock);
 
-    /* Start RX task on Core 1 */
+    
     sock->rx_running = true;
     if (xTaskCreatePinnedToCore(udp_rx_task, "ml_udp_rx", 4096, sock,
                                  configMAX_PRIORITIES - 2, &sock->rx_task, 1) != pdPASS) {
@@ -208,7 +208,7 @@ microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_por
     microlink_ip_to_str(ml->vpn_ip, ip_buf);
     ESP_LOGI(TAG, "UDP socket: %s:%u", ip_buf, sock->local_port);
 
-    /* Trigger CallMeMaybe to all peers for WG handshake establishment */
+    
     for (int i = 0; i < ml->peer_count; i++) {
         if (ml->peers[i].active) {
             ml_wg_mgr_send_cmm(ml, ml->peers[i].vpn_ip);
@@ -222,9 +222,9 @@ microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_por
 void microlink_udp_close(microlink_udp_socket_t *sock) {
     if (!sock) return;
 
-    /* Unregister lwIP callback FIRST to prevent use-after-free.
-     * The callback runs from tcpip thread and accesses sock->rx_sem,
-     * so it must be unregistered before we touch any sock fields. */
+    
+
+
     if (sock->pcb) {
         udp_recv(sock->pcb, NULL, NULL);
     }
@@ -261,9 +261,9 @@ esp_err_t microlink_udp_send(microlink_udp_socket_t *sock, uint32_t dest_ip,
 
     if (err != ERR_OK) {
         if (sock->ml) {
-            /* Rate-limit handshake retrigger: max once per 10 seconds per socket.
-             * Without this, high-frequency heartbeats each trigger a full WG handshake
-             * initiation + CallMeMaybe, flooding the DERP TX queue. */
+            
+
+
             static uint64_t last_trigger_ms = 0;
             uint64_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
             if (now_ms - last_trigger_ms > 10000) {

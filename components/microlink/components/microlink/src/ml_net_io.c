@@ -1,17 +1,17 @@
-/**
- * @file ml_net_io.c
- * @brief UDP Network I/O Task
- *
- * select() loop for UDP sockets (DISCO, STUN).
- * DERP TLS is handled by the dedicated DERP I/O task (ml_derp.c).
- *
- * Classifies received UDP packets and routes to appropriate queues:
- * - DISCO magic prefix -> disco_rx_queue -> wg_mgr task
- * - STUN response -> stun_rx_queue -> coord task
- * - WireGuard packet -> wg_rx_queue -> wg_mgr task
- *
- * Reference: tailscale/wgengine/magicsock/magicsock.go (receiveIPv4)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "microlink_internal.h"
 #include "esp_log.h"
@@ -22,10 +22,10 @@
 
 static const char *TAG = "ml_net_io";
 
-/* DISCO magic bytes: "TS" + sparkles emoji UTF-8 */
+
 static const uint8_t DISCO_MAGIC[6] = { 'T', 'S', 0xf0, 0x9f, 0x92, 0xac };
 
-/* Packet classification */
+
 typedef enum {
     PKT_DISCO,
     PKT_STUN,
@@ -34,15 +34,15 @@ typedef enum {
 } pkt_type_t;
 
 static pkt_type_t classify_packet(const uint8_t *data, size_t len) {
-    /* STUN: starts with 0x00 0x01 (binding request) or 0x01 0x01 (binding response) */
+    
     if (len >= 20 && (data[0] == 0x00 || data[0] == 0x01) && data[1] == 0x01) {
         return PKT_STUN;
     }
-    /* DISCO: starts with 6-byte magic */
+    
     if (len >= 62 && memcmp(data, DISCO_MAGIC, 6) == 0) {
         return PKT_DISCO;
     }
-    /* Everything else is WireGuard */
+    
     if (len >= 4) {
         return PKT_WIREGUARD;
     }
@@ -53,7 +53,7 @@ static void route_udp_packet(microlink_t *ml, uint8_t *data, size_t len,
                               uint32_t src_ip, uint16_t src_port) {
     pkt_type_t type = classify_packet(data, len);
 
-    /* Log ALL direct UDP packets for debugging */
+    
     ESP_LOGI(TAG, "UDP RX: %d bytes from %d.%d.%d.%d:%d type=%s hdr=%02x",
              (int)len,
              (int)((src_ip >> 24) & 0xFF), (int)((src_ip >> 16) & 0xFF),
@@ -74,7 +74,7 @@ static void route_udp_packet(microlink_t *ml, uint8_t *data, size_t len,
     switch (type) {
     case PKT_STUN:
         if (xQueueSend(ml->stun_rx_queue, &pkt, 0) != pdTRUE) {
-            free(data);  /* Queue full, drop */
+            free(data);  
         }
         break;
     case PKT_DISCO:
@@ -101,33 +101,33 @@ void ml_net_io_task(void *arg) {
 
     while (!(xEventGroupGetBits(ml->events) & ML_EVT_SHUTDOWN_REQUEST)) {
 
-        /* ---- UDP sockets via select() ---- */
+        
         fd_set read_fds;
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };  /* 50ms select timeout */
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };  
         int max_fd = -1;
 
         FD_ZERO(&read_fds);
 
-        /* Add DISCO UDP socket */
+        
         if (ml->disco_sock4 >= 0) {
             FD_SET(ml->disco_sock4, &read_fds);
             if (ml->disco_sock4 > max_fd) max_fd = ml->disco_sock4;
         }
 
-        /* Add STUN socket (IPv4) */
+        
         if (ml->stun_sock >= 0) {
             FD_SET(ml->stun_sock, &read_fds);
             if (ml->stun_sock > max_fd) max_fd = ml->stun_sock;
         }
 
-        /* Add STUN socket (IPv6) */
+        
         if (ml->stun_sock6 >= 0) {
             FD_SET(ml->stun_sock6, &read_fds);
             if (ml->stun_sock6 > max_fd) max_fd = ml->stun_sock6;
         }
 
         if (max_fd < 0) {
-            /* No UDP sockets yet, just yield */
+            
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -140,9 +140,9 @@ void ml_net_io_task(void *arg) {
             }
             continue;
         }
-        if (sel == 0) continue;  /* Timeout */
+        if (sel == 0) continue;  
 
-        /* Process DISCO UDP socket */
+        
         if (ml->disco_sock4 >= 0 && FD_ISSET(ml->disco_sock4, &read_fds)) {
             struct sockaddr_in src_addr;
             socklen_t addr_len = sizeof(src_addr);
@@ -159,7 +159,7 @@ void ml_net_io_task(void *arg) {
             }
         }
 
-        /* Process STUN socket (IPv4) */
+        
         if (ml->stun_sock >= 0 && FD_ISSET(ml->stun_sock, &read_fds)) {
             struct sockaddr_in src_addr;
             socklen_t addr_len = sizeof(src_addr);
@@ -183,7 +183,7 @@ void ml_net_io_task(void *arg) {
             }
         }
 
-        /* Process STUN socket (IPv6) */
+        
         if (ml->stun_sock6 >= 0 && FD_ISSET(ml->stun_sock6, &read_fds)) {
             struct sockaddr_in6 src_addr6;
             socklen_t addr_len = sizeof(src_addr6);
@@ -196,7 +196,7 @@ void ml_net_io_task(void *arg) {
                     ml_rx_packet_t pkt = {
                         .data = pkt_data,
                         .len = n,
-                        .src_ip = 0,  /* IPv6 — use parse_response_ipv6 */
+                        .src_ip = 0,  
                         .src_port = ntohs(src_addr6.sin6_port),
                         .via_derp = false,
                     };

@@ -182,116 +182,116 @@ menu "ESP32 Remote Control"
                 Long-poll timeout for getUpdates. 20s matches Telegram default.
     endmenu
 
-    menu "cocopa01 Configuration"
-        config COCOPA01_IP
-            string "cocopa01 LAN IP"
+    menu "server Configuration"
+        config SERVER_IP
+            string "server LAN IP"
             default "192.168.1.100"
 
-        config COCOPA01_TS_IP
-            string "cocopa01 Tailscale IP"
+        config SERVER_TS_IP
+            string "server Tailscale IP"
             default "100.64.0.2"
             help
-                IP de Tailscale de cocopa01. Usado por el proxy HTTP para
+                IP de Tailscale de server. Usado por el proxy HTTP para
                 hacer 302 redirect desde la URL del ESP32 a la URL del
                 servidor (mantiene cookies de sesión funcionando).
 
-        config COCOPA01_HTTP_PORT
-            int "cocopa01 HTTP port"
+        config SERVER_HTTP_PORT
+            int "server HTTP port"
             default 9999
 
-        config COCOPA01_MONITOR_PORT
-            int "cocopa01 monitor HTTP port"
+        config SERVER_MONITOR_PORT
+            int "server monitor HTTP port"
             default 8085
             help
-                Port where CocopaMonitor HTTP server is listening on cocopa01.
+                Port where Monitor HTTP server is listening on server.
 
-        config COCOPA01_SSH_PORT
-            int "cocopa01 SSH port"
+        config SERVER_SSH_PORT
+            int "server SSH port"
             default 22
 
-        config COCOPA01_SHUTDOWN_SECRET
+        config SERVER_SHUTDOWN_SECRET
             string "Shutdown endpoint shared secret"
             default ""
             help
-                Must match /etc/esp32-shutdown/secret on cocopa01.
+                Must match /etc/esp32-shutdown/secret on server.
 
-        config COCOPA01_MAC_HEX
-            string "cocopa01 MAC address"
+        config SERVER_MAC_HEX
+            string "server MAC address"
             default "00:11:22:33:44:55"
 
-        config COCOPA01_WOL_PORT
+        config SERVER_WOL_PORT
             int "WOL UDP port"
             default 9
 
-        config COCOPA01_BROADCAST_IP
+        config SERVER_BROADCAST_IP
             string "WOL broadcast IP"
             default "192.168.1.255"
 
-        config COCOPA01_POLL_INTERVAL_S
+        config SERVER_POLL_INTERVAL_S
             int "State polling interval (seconds)"
             default 30
 
-        config COCOPA01_FUNNEL_URL
-            string "Tailscale Funnel URL for cocopa01"
+        config SERVER_FUNNEL_URL
+            string "Tailscale Funnel URL for server"
             default ""
             help
-                Public Tailscale Funnel URL that points to cocopa01.
+                Public Tailscale Funnel URL that points to server.
                 When a request arrives on the ESP32's :443 Funnel server,
                 /gate redirects here (302) instead of the internal Tailscale IP.
                 Example: "https://server-abc.tailXXXX.ts.net"
                 Leave empty to disable Funnel redirect (falls back to Tailscale IP).
 
-        config GATE_COCOPA_URL
-            string "Redirect target for /cocopa/* handler"
+        config GATE_APP_URL
+            string "Redirect target for /app/* handler"
             default ""
             help
-                Base URL for the /cocopa/* path-based redirect. The ESP32 strips
-                the /cocopa prefix and redirects (302) to this URL + rest-of-path.
-                WOL is sent to cocopa01 before redirect.
+                Base URL for the /app/* path-based redirect. The ESP32 strips
+                the /app prefix and redirects (302) to this URL + rest-of-path.
+                WOL is sent to server before redirect.
                 Example: "https://server.tailXXXX.ts.net"
-                Leave empty to make /cocopa/* return 503.
+                Leave empty to make /app/* return 503.
 
         config GATE_KIUBART_URL
-            string "Redirect target for /kiubart/* handler"
+            string "Redirect target for /kiosk/* handler"
             default "https://server.tailXXXX.ts.net/app"
             help
-                Base URL for the /kiubart/* path-based redirect. The ESP32 strips
-                the /kiubart prefix and redirects (302) to this URL + rest-of-path.
-                WOL is sent to cocopa01 before redirect.
+                Base URL for the /kiosk/* path-based redirect. The ESP32 strips
+                the /kiosk prefix and redirects (302) to this URL + rest-of-path.
+                WOL is sent to server before redirect.
                 Example: "https://server.tailXXXX.ts.net/app"
-                Leave empty to make /kiubart/* return 503.
-        config COCOPA01_TS_HOSTNAME
-            string "cocopa01 Tailscale hostname (MagicDNS)"
+                Leave empty to make /kiosk/* return 503.
+        config SERVER_TS_HOSTNAME
+            string "server Tailscale hostname (MagicDNS)"
             default "server.tailXXXX.ts.net"
             help
-                Nombre publico de cocopa01. La sonda de readiness (ready_probe.c)
+                Nombre publico de server. La sonda de readiness (ready_probe.c)
                 manda el GET por la IP de la tailnet pero con este Host, que es
                 lo que selecciona el virtual host de nginx y lo que el tunel
-                reenvia. Se deriva de CONFIG_GATE_COCOPA_URL si esa URL esta
+                reenvia. Se deriva de CONFIG_GATE_APP_URL si esa URL esta
                 llena; este valor es el respaldo.
 
-        config COCOPA01_FUNNEL_PORT
-            int "Tailscale Funnel listener port on cocopa01"
+        config SERVER_FUNNEL_PORT
+            int "Tailscale Funnel listener port on server"
             default 443
             help
-                Puerto donde tailscaled de cocopa01 escucha el Funnel. Si este
+                Puerto donde tailscaled de server escucha el Funnel. Si este
                 puerto no esta abierto, el tunel devuelve 502 al cliente.
 
-        config COCOPA01_PROXY_PORT
-            int "nginx reverse proxy port on cocopa01"
+        config SERVER_PROXY_PORT
+            int "nginx reverse proxy port on server"
             default 8080
             help
                 Puerto del backend que el Funnel reenvia. La sonda de readiness
                 le hace un GET con el Host publico: si responde, el tunel tambien
-                va a poder servir. Mismo puerto que usa cocopa01_web_alive().
+                va a poder servir. Mismo puerto que usa server_web_alive().
 
         config ESP32_READY_NOTIFY_SECRET
-            string "Secret for GET /notify/ready (cocopa01 -> ESP32)"
+            string "Secret for GET /notify/ready (server -> ESP32)"
             default ""
             help
-                Permite que el propio cocopa01 avise que ya esta listo en vez de
+                Permite que el propio server avise que ya esta listo en vez de
                 que el ESP32 lo descubra sondeando. Lo llama el servicio
-                cocopa-ready-notify.service (tools/cocopa01/) al terminar de
+                app-ready-notify.service (tools/server/) al terminar de
                 verificarse a si mismo. Si queda vacio el endpoint responde 503
                 y el ESP32 sigue funcionando solo con sus propias sondas.
                 OJO: con la cadena vacia el endpoint NO se habilita.
@@ -303,7 +303,7 @@ menu "ESP32 Remote Control"
 
     menu "Inactivity Automation"
         config AUTO_SUSPEND_AFTER_MIN
-            int "Minutes of inactivity before sending /suspend to cocopa01"
+            int "Minutes of inactivity before sending /suspend to server"
             default 20
             range 1 1440
             help

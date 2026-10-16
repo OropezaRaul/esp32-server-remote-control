@@ -296,10 +296,10 @@ management controller that:
     CONFIG_TELEGRAM_AUTHORIZED_IDS="123456789,987654321"
 
     # Target Server Settings
-    CONFIG_COCOPA01_IP="192.168.1.100"
-    CONFIG_COCOPA01_HTTP_PORT=9999
-    CONFIG_COCOPA01_SHUTDOWN_SECRET="Your_Generated_Secret_Token"
-    CONFIG_COCOPA01_MAC_HEX="00:11:22:33:44:55"
+    CONFIG_SERVER_IP="192.168.1.100"
+    CONFIG_SERVER_HTTP_PORT=9999
+    CONFIG_SERVER_SHUTDOWN_SECRET="Your_Generated_Secret_Token"
+    CONFIG_SERVER_MAC_HEX="00:11:22:33:44:55"
     -------------------------------------------------------------------
 
 [+] Step 3: Build the Firmware

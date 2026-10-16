@@ -13,8 +13,8 @@
 // del 302 ("http" o "https"). `label` es solo cosmético para /portmap list.
 //
 // `upstream_host` vacío = auto-routing según IP del peer:
-//   - peer en LAN (192.168.x.x) -> CONFIG_COCOPA01_IP
-//   - peer por Tailscale u otro -> CONFIG_COCOPA01_TS_IP
+//   - peer en LAN (192.168.x.x) -> CONFIG_SERVER_IP
+//   - peer por Tailscale u otro -> CONFIG_SERVER_TS_IP
 // Host explícito (IP o hostname) = se usa tal cual. Soporta Tailscale IPs,
 // hostnames de cloudflared tunnels, etc. DNS lookup se hace en el handler
 // (no en el listener, para no bloquear el accept loop).
@@ -59,7 +59,7 @@ esp_err_t portmap_add(uint16_t local_port,
 esp_err_t portmap_del(uint16_t local_port);
 
 // Vuelve a los defaults de compilación: para todos los listeners, siembra
-// [8080, "", 8080, "http", "cocopa"], persiste y rearranca.
+// [8080, "", 8080, "http", "app"], persiste y rearranca.
 esp_err_t portmap_reset_defaults(void);
 
 // Cantidad actual de mappings activos.

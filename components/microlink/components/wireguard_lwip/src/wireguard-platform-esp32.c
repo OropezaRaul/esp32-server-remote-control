@@ -1,7 +1,7 @@
-/**
- * @file wireguard-platform-esp32.c
- * @brief ESP32 platform implementation for wireguard-lwip
- */
+
+
+
+
 
 #include "wireguard-platform.h"
 #include "esp_random.h"
@@ -9,9 +9,9 @@
 #include "lwip/sys.h"
 #include <string.h>
 
-/* ============================================================================
- * Time Functions
- * ========================================================================== */
+
+
+
 
 uint32_t wireguard_sys_now() {
     // Use lwIP's built-in time function

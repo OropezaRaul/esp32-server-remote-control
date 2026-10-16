@@ -10,7 +10,7 @@
 #include <stdio.h>
 
 #include "state.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "telegram.h"
 #include "wol.h"
 #include "wake.h"
@@ -147,16 +147,16 @@ static bool due(uint16_t target_min, uint32_t last_day, int now_min,
 
 // ─── Acciones ─────────────────────────────────────────────────
 static void fire_wake(void) {
-    if (state_get() == COCOPA01_STATE_ON) {
-        ESP_LOGI(TAG, "wake programado: cocopa01 ya está ON — skip");
-        telegram_broadcast("Scheduler: hora de wake — cocopa01 ya estaba ON, nada que hacer.");
+    if (state_get() == SERVER_STATE_ON) {
+        ESP_LOGI(TAG, "wake programado: server ya está ON — skip");
+        telegram_broadcast("Scheduler: hora de wake — server ya estaba ON, nada que hacer.");
         return;
     }
     esp_err_t wres = wake_request("scheduler");
     if (wres == ESP_OK) {
         state_mark_known_on();
         ESP_LOGI(TAG, "wake programado: WOL enviado (con reintentos)");
-        telegram_broadcast("Scheduler: wake programado — magic packet enviado a cocopa01 "
+        telegram_broadcast("Scheduler: wake programado — magic packet enviado a server "
                            "(reintento automatico cada 10 s hasta 4 min).");
     } else {
         ESP_LOGW(TAG, "wake programado: WOL falló (%s)", esp_err_to_name(wres));
@@ -169,14 +169,14 @@ static void fire_wake(void) {
 }
 
 static void fire_off(void) {
-    if (cocopa01_tcp_alive(2000)) {
-        if (cocopa01_send_off() == ESP_OK) {
-            state_set(COCOPA01_STATE_OFF);
+    if (server_tcp_alive(2000)) {
+        if (server_send_off() == ESP_OK) {
+            state_set(SERVER_STATE_OFF);
             ESP_LOGI(TAG, "off programado: /off OK");
-            telegram_broadcast("Scheduler: off programado ejecutado — cocopa01 OFF.");
+            telegram_broadcast("Scheduler: off programado ejecutado — server OFF.");
         } else {
             ESP_LOGW(TAG, "off programado: POST /off rechazado");
-            telegram_broadcast("Scheduler: off programado FALLÓ (cocopa01 rechazó /off).");
+            telegram_broadcast("Scheduler: off programado FALLÓ (server rechazó /off).");
         }
         return;
     }
@@ -184,8 +184,8 @@ static void fire_off(void) {
     // En S3 la NIC está caída: ACPI no permite S3→S5 directo, hay que
     // despertar a S0 con WOL y recién ahí mandar /off. Mismo baile que el
     // /off manual (telegram.c) y que automation.c.
-    if (state_get() == COCOPA01_STATE_SUSPEND) {
-        ESP_LOGI(TAG, "off programado: cocopa01 en S3 — WOL para poder apagar");
+    if (state_get() == SERVER_STATE_SUSPEND) {
+        ESP_LOGI(TAG, "off programado: server en S3 — WOL para poder apagar");
         if (wol_send_default() != ESP_OK) {
             telegram_broadcast("Scheduler: off programado FALLÓ (no se pudo enviar WOL).");
             return;
@@ -194,17 +194,17 @@ static void fire_off(void) {
         bool came_up = false;
         for (int i = 0; i < 30; i++) {  // hasta 60s: BIOS+userspace pueden tardar
             vTaskDelay(pdMS_TO_TICKS(2000));
-            if (cocopa01_tcp_alive(2000)) { came_up = true; break; }
+            if (server_tcp_alive(2000)) { came_up = true; break; }
         }
         if (!came_up) {
-            ESP_LOGW(TAG, "off programado: cocopa01 no volvió tras WOL en 60s");
-            telegram_broadcast("Scheduler: off programado omitido (cocopa01 no despertó tras WOL).");
+            ESP_LOGW(TAG, "off programado: server no volvió tras WOL en 60s");
+            telegram_broadcast("Scheduler: off programado omitido (server no despertó tras WOL).");
             return;
         }
-        if (cocopa01_send_off() == ESP_OK) {
-            state_set(COCOPA01_STATE_OFF);
+        if (server_send_off() == ESP_OK) {
+            state_set(SERVER_STATE_OFF);
             ESP_LOGI(TAG, "off programado: S3→S0→S5 completo");
-            telegram_broadcast("Scheduler: off programado — cocopa01 despertado de S3 y apagado.");
+            telegram_broadcast("Scheduler: off programado — server despertado de S3 y apagado.");
         } else {
             telegram_broadcast("Scheduler: off programado FALLÓ (rechazó /off tras despertar).");
         }
@@ -212,8 +212,8 @@ static void fire_off(void) {
     }
 
     // OFF o UNKNOWN sin TCP: no hay nada que apagar (o no accesible).
-    ESP_LOGI(TAG, "off programado: cocopa01 no accesible — skip");
-    telegram_broadcast("Scheduler: hora de off — cocopa01 no accesible (ya apagado?), nada que hacer.");
+    ESP_LOGI(TAG, "off programado: server no accesible — skip");
+    telegram_broadcast("Scheduler: hora de off — server no accesible (ya apagado?), nada que hacer.");
 }
 
 // ─── Task ─────────────────────────────────────────────────────

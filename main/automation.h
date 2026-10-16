@@ -34,7 +34,7 @@ typedef struct {
 
 // Inicializa el módulo: carga config desde NVS (o defaults si no existe),
 // arranca la tarea de supervisión. Llamar después de state_init() y
-// cocopa01_client disponible.
+// server_client disponible.
 esp_err_t automation_init(void);
 
 // Llamar desde telegram.c, web_server.c y state.c ante cualquier evento

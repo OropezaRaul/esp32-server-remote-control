@@ -1,14 +1,14 @@
-/**
- * @file ml_tcp.c
- * @brief MicroLink v2 TCP Socket API
- *
- * Provides TCP connections over the Tailscale VPN tunnel.
- * Uses standard BSD sockets routed through the WireGuard netif.
- *
- * lwIP routes 100.64.0.0/10 traffic through the WG netif automatically
- * (set up in ml_wg_mgr.c). This module triggers the WG handshake,
- * waits for tunnel establishment, then lets standard TCP through.
- */
+
+
+
+
+
+
+
+
+
+
+
 
 #include "microlink_internal.h"
 #include "esp_log.h"
@@ -19,9 +19,9 @@
 
 static const char *TAG = "ml_tcp";
 
-/* ============================================================================
- * Internal Types
- * ========================================================================== */
+
+
+
 
 struct microlink_tcp_socket {
     microlink_t *ml;
@@ -31,9 +31,9 @@ struct microlink_tcp_socket {
     bool connected;
 };
 
-/* ============================================================================
- * Public API
- * ========================================================================== */
+
+
+
 
 microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
                                                 uint16_t dest_port,
@@ -52,15 +52,15 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
     ESP_LOGI(TAG, "TCP connect to %s:%u (timeout=%lums)", ip_str, dest_port,
              (unsigned long)timeout_ms);
 
-    /* Trigger WG handshake + DISCO to wake up the peer connection.
-     * The tunnel may already be up if there's been recent traffic. */
+    
+
     ml_wg_mgr_trigger_handshake(ml, dest_ip);
     ml_wg_mgr_send_cmm(ml, dest_ip);
 
-    /* Wait for WG tunnel to establish with this peer.
-     * Poll wireguardif_peer_is_up() — once the WG handshake completes,
-     * lwIP can route TCP through the tunnel. Without a valid session,
-     * connect() will fail with EHOSTUNREACH. */
+    
+
+
+
     uint32_t wait_ms = 0;
     uint32_t max_wait = timeout_ms > 0 ? timeout_ms : 15000;
     bool tunnel_up = ml_wg_mgr_peer_is_up(ml, dest_ip);
@@ -71,7 +71,7 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
 
         tunnel_up = ml_wg_mgr_peer_is_up(ml, dest_ip);
 
-        /* Re-trigger handshake every 5s in case the first was dropped */
+        
         if (!tunnel_up && (wait_ms % 5000) == 0) {
             ESP_LOGI(TAG, "WG tunnel not up after %lums, re-triggering handshake",
                      (unsigned long)wait_ms);
@@ -87,20 +87,20 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
                  (unsigned long)max_wait);
     }
 
-    /* Create TCP socket */
+    
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) {
         ESP_LOGE(TAG, "socket() failed: %d", errno);
         return NULL;
     }
 
-    /* Bind to our VPN IP so lwIP routes through the WG netif.
-     * Without this, the PPP default route may catch 100.x.x.x traffic
-     * and send it out the cellular modem raw (unroutable). */
+    
+
+
     if (ml->vpn_ip != 0) {
         struct sockaddr_in src = {
             .sin_family = AF_INET,
-            .sin_port = 0,  /* ephemeral */
+            .sin_port = 0,  
             .sin_addr.s_addr = htonl(ml->vpn_ip),
         };
         if (bind(fd, (struct sockaddr *)&src, sizeof(src)) != 0) {
@@ -112,7 +112,7 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
         }
     }
 
-    /* Set connect/send timeout */
+    
     uint32_t remaining = (timeout_ms > wait_ms) ? (timeout_ms - wait_ms) : 10000;
     struct timeval tv = {
         .tv_sec = remaining / 1000,
@@ -120,11 +120,11 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
     };
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    /* Set recv timeout */
+    
     struct timeval rtv = { .tv_sec = 10, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
 
-    /* TCP keepalive for long-lived connections over VPN */
+    
     int keepalive = 1;
     int keepidle = 30;
     int keepintvl = 10;
@@ -134,16 +134,16 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 
-    /* Disable Nagle for low-latency sends */
+    
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-    /* Connect */
+    
     struct sockaddr_in dest = {
         .sin_family = AF_INET,
         .sin_port = htons(dest_port),
     };
-    /* Convert host byte order IP to network byte order */
+    
     dest.sin_addr.s_addr = htonl(dest_ip);
 
     int64_t t_start = esp_timer_get_time();
@@ -152,7 +152,7 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
         int err = errno;
         ESP_LOGE(TAG, "connect() to %s:%u failed: errno=%d", ip_str, dest_port, err);
 
-        /* If tunnel wasn't ready, retry once after triggering handshake again */
+        
         if (err == EHOSTUNREACH || err == ENETUNREACH || err == ETIMEDOUT) {
             close(fd);
             ESP_LOGI(TAG, "Retrying after re-triggering WG handshake...");
@@ -163,7 +163,7 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
             fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             if (fd < 0) return NULL;
 
-            /* Bind to VPN IP for routing */
+            
             if (ml->vpn_ip != 0) {
                 struct sockaddr_in retry_src = {
                     .sin_family = AF_INET,
@@ -193,7 +193,7 @@ microlink_tcp_socket_t *microlink_tcp_connect(microlink_t *ml, uint32_t dest_ip,
     ESP_LOGI(TAG, "TCP connected to %s:%u (%lld ms)", ip_str, dest_port,
              (t_end - t_start) / 1000);
 
-    /* Allocate handle */
+    
     microlink_tcp_socket_t *sock = calloc(1, sizeof(microlink_tcp_socket_t));
     if (!sock) {
         close(fd);
@@ -247,14 +247,14 @@ int microlink_tcp_recv(microlink_tcp_socket_t *sock, void *buffer, size_t len,
     int n = recv(sock->fd, buffer, len, 0);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;  /* Timeout, no data */
+            return 0;  
         }
         ESP_LOGE(TAG, "TCP recv failed: errno=%d", errno);
         sock->connected = false;
         return -1;
     }
     if (n == 0) {
-        /* Peer closed connection */
+        
         ESP_LOGI(TAG, "TCP peer closed connection");
         sock->connected = false;
         return -1;
@@ -271,7 +271,7 @@ void microlink_tcp_close(microlink_tcp_socket_t *sock) {
     if (!sock) return;
 
     if (sock->fd >= 0) {
-        /* Graceful shutdown */
+        
         shutdown(sock->fd, SHUT_RDWR);
         close(sock->fd);
         sock->fd = -1;

@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "automation.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "state.h"
 #include "telegram.h"
 #include "wake_logic.h"
@@ -37,11 +37,11 @@ static void set_status_text(const char *fmt, ...) {
     va_end(ap);
 }
 
-// true si cocopa01 responde de verdad ahora mismo (no es el cache del poll:
+// true si server responde de verdad ahora mismo (no es el cache del poll:
 // aqui la decision de "ya desperto" tiene que ser en vivo, o el supervisor
 // seguiria mandando magic packets 30 s despues de que el server arranco).
-static bool cocopa01_alive_now(void) {
-    return cocopa01_tcp_alive(WAKE_PROBE_MS);
+static bool server_alive_now(void) {
+    return server_tcp_alive(WAKE_PROBE_MS);
 }
 
 static void alert_failure(uint32_t now, const wake_logic_t *l) {
@@ -50,10 +50,10 @@ static void alert_failure(uint32_t now, const wake_logic_t *l) {
 
     char msg[320];
     snprintf(msg, sizeof(msg),
-        "AVISO Auto-WOL: cocopa01 NO respondio tras %u rafagas en %u min "
+        "AVISO Auto-WOL: server NO respondio tras %u rafagas en %u min "
         "(motivo: %s).\n"
         "El gateway sigue vivo y reintentara solo en el proximo acceso. "
-        "Si el negocio sigue caido: revisar alimentacion/BIOS/ethernet de cocopa01.",
+        "Si el negocio sigue caido: revisar alimentacion/BIOS/ethernet de server.",
         (unsigned)l->attempts,
         (unsigned)(l->window_ms / 60000),
         l->reason[0] ? l->reason : "wake");
@@ -74,11 +74,11 @@ static void wake_task(void *arg) {
         state_trigger_fast_poll();
 
         // 1) Ya respondio? -> fin del intento en exito.
-        if (cocopa01_alive_now()) {
+        if (server_alive_now()) {
             uint32_t attempts = s_wake.attempts;
             uint32_t elapsed = (uint32_t)(now - s_wake.armed_ms);
             wake_logic_confirm(&s_wake, now);
-            ESP_LOGI(TAG, "wake OK: cocopa01 respondio en %u s tras %u rafaga(s) (%s)",
+            ESP_LOGI(TAG, "wake OK: server respondio en %u s tras %u rafaga(s) (%s)",
                      (unsigned)(elapsed / 1000), (unsigned)attempts,
                      s_wake.reason[0] ? s_wake.reason : "wake");
             set_status_text("wake: OK en %us tras %u intentos (%s)",

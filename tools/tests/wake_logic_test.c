@@ -38,9 +38,9 @@ int main(void) {
     {
         wake_logic_t l;
         wake_logic_init(&l, 0, WINDOW_MS);
-        check(wake_logic_request(&l, 0, "cocopa") == true, "request: arma episodio nuevo");
+        check(wake_logic_request(&l, 0, "app") == true, "request: arma episodio nuevo");
         check(wake_logic_pending(&l), "request: pending");
-        check(strcmp(l.reason, "cocopa") == 0, "request: reason guardado");
+        check(strcmp(l.reason, "app") == 0, "request: reason guardado");
         check(wake_logic_due_send(&l, 0, RETRY_MS) == true, "request: 1er envio inmediato");
 
         wake_logic_record_send(&l, 0);
@@ -55,9 +55,9 @@ int main(void) {
     {
         wake_logic_t l;
         wake_logic_init(&l, 0, WINDOW_MS);
-        check(wake_logic_request(&l, 0, "cocopa"), "r1: arma");
+        check(wake_logic_request(&l, 0, "app"), "r1: arma");
         wake_logic_record_send(&l, 0);
-        check(wake_logic_request(&l, 2000, "cocopa") == false, "r2: mismo episodio");
+        check(wake_logic_request(&l, 2000, "app") == false, "r2: mismo episodio");
         check(l.attempts == 1, "r2: no reinicia intentos");
         check(wake_logic_request(&l, 60000, "gate") == false, "r3: mismo episodio");
         check(l.attempts == 1, "r3: no reinicia intentos");
@@ -70,7 +70,7 @@ int main(void) {
     {
         wake_logic_t l;
         wake_logic_init(&l, 0, WINDOW_MS);
-        wake_logic_request(&l, 0, "cocopa");
+        wake_logic_request(&l, 0, "app");
         wake_logic_record_send(&l, 0);
         wake_logic_record_send(&l, 10000);
         wake_logic_confirm(&l, 37000);
@@ -79,7 +79,7 @@ int main(void) {
         check(l.attempts == 2, "confirm: intentos conservados");
         check(!wake_logic_due_send(&l, 50000, RETRY_MS), "confirm: no envia mas");
         // Un request posterior abre un episodio NUEVO (limpio).
-        check(wake_logic_request(&l, 50000, "cocopa"), "post-confirm: rearma");
+        check(wake_logic_request(&l, 50000, "app"), "post-confirm: rearma");
         check(l.attempts == 0, "post-confirm: intentos a 0");
         check(wake_logic_due_send(&l, 50000, RETRY_MS), "post-confirm: envio inmediato");
     }
@@ -96,7 +96,7 @@ int main(void) {
         wake_logic_fail(&l, 240000);
         check(!wake_logic_pending(&l), "fail: pending=false");
         check(l.failed_ms == 240000, "fail: timestamp");
-        check(wake_logic_request(&l, 250000, "cocopa"), "fail: rearma limpio");
+        check(wake_logic_request(&l, 250000, "app"), "fail: rearma limpio");
         check(!wake_logic_expired(&l, 250000), "fail: ventana nueva completa");
     }
 
@@ -107,7 +107,7 @@ int main(void) {
         wake_logic_t l;
         uint32_t t0 = 0xFFFFF000UL; 
         wake_logic_init(&l, t0, WINDOW_MS);
-        wake_logic_request(&l, t0, "cocopa");
+        wake_logic_request(&l, t0, "app");
         wake_logic_record_send(&l, t0);
         uint32_t later = t0 + 35000UL; 
         check(wake_logic_due_send(&l, later, RETRY_MS), "wrap: toca reintentar tras 35s");
@@ -130,7 +130,7 @@ int main(void) {
         wake_logic_t l;
         char buf[128];
         wake_logic_init(&l, 0, WINDOW_MS);
-        wake_logic_request(&l, 0, "cocopa");
+        wake_logic_request(&l, 0, "app");
         wake_logic_record_send(&l, 0);
         wake_logic_record_send(&l, 10000);
         wake_logic_format(&l, 25000, buf, sizeof(buf));

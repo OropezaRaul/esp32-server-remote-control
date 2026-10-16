@@ -1,61 +1,61 @@
-/*                          =======================
-  ============================ C/C++ HEADER FILE =============================
-                            =======================                      
 
-    Collection of all required submodules from naclM0 required for curve25519
-    scalar multiplication  (not including randomization, etc.) alone.
 
-    Library naclM0 largely bases on work avrNacl of M. Hutter and P. Schwabe.
 
-    Will compile to the two functions
 
-    int
-    crypto_scalarmult_base_curve25519(
-        unsigned char*       q,
-        const unsigned char* n
-    );
 
-    int
-    crypto_scalarmult_curve25519 (
-        unsigned char*       r,
-        const unsigned char* s,
-        const unsigned char* p
-    );
 
-    Requires inttypes.h header and the four external assembly functions
 
-    extern void
-    fe25519_reduceTo256Bits_asm (
-        fe25519              *res,
-        const UN_512bitValue *in
-    );
 
-    extern void
-    fe25519_mpyWith121666_asm (
-        fe25519*       out,
-        const fe25519* in
-    );
 
-    extern void
-    multiply256x256_asm (
-        UN_512bitValue*       result,
-        const UN_256bitValue* x,
-        const UN_256bitValue* y
-    );
 
-    extern void
-    square256_asm (
-        UN_512bitValue*       result,
-        const UN_256bitValue* x
-    );
 
-    \file scalarmult.c
 
-    \Author B. Haase, Endress + Hauser Conducta GmbH & Co. KG
 
-    Distributed under the conditions of the
-    Creative Commons CC0 1.0 Universal public domain dedication
-  ============================================================================*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include <inttypes.h>
 
@@ -340,76 +340,76 @@ fe25519_invert_useProvidedScratchBuffers(
     {
          fe25519 *z2 = z2_50_0;
 
-        /* 2 */ fe25519_square(z2, x);
-        /* 4 */ fe25519_square(t0, z2);
-        /* 8 */ fe25519_square(t0, t0);
-        /* 9 */ fe25519_mul(z2_10_0, t0, x);
-        /* 11 */ fe25519_mul(z11, z2_10_0, z2);
+         fe25519_square(z2, x);
+         fe25519_square(t0, z2);
+         fe25519_square(t0, t0);
+         fe25519_mul(z2_10_0, t0, x);
+         fe25519_mul(z11, z2_10_0, z2);
         
         // z2 is dead.
     }
 	
-    /* 22 */ fe25519_square(t0, z11);
-    /* 2^5 - 2^0 = 31 */ fe25519_mul(z2_10_0, t0, z2_10_0);
+     fe25519_square(t0, z11);
+     fe25519_mul(z2_10_0, t0, z2_10_0);
 
-    /* 2^6 - 2^1 */ fe25519_square(t0, z2_10_0);
-    /* 2^7 - 2^2 */ fe25519_square(t0, t0);
-    /* 2^8 - 2^3 */ fe25519_square(t0, t0);
-    /* 2^9 - 2^4 */ fe25519_square(t0, t0);
-    /* 2^10 - 2^5 */ fe25519_square(t0, t0);
-    /* 2^10 - 2^0 */ fe25519_mul(z2_10_0, t0, z2_10_0);
+     fe25519_square(t0, z2_10_0);
+     fe25519_square(t0, t0);
+     fe25519_square(t0, t0);
+     fe25519_square(t0, t0);
+     fe25519_square(t0, t0);
+     fe25519_mul(z2_10_0, t0, z2_10_0);
 
-    /* 2^11 - 2^1 */ fe25519_square(t0, z2_10_0);
+     fe25519_square(t0, z2_10_0);
 
-    /* 2^20 - 2^10 */ for (i = 1; i < 10; i ++)
+     for (i = 1; i < 10; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^20 - 2^0 */ fe25519_mul(z2_50_0, t0, z2_10_0);
+     fe25519_mul(z2_50_0, t0, z2_10_0);
 
-    /* 2^21 - 2^1 */ fe25519_square(t0, z2_50_0);
+     fe25519_square(t0, z2_50_0);
 
-    /* 2^40 - 2^20 */ for (i = 1; i < 20; i ++)
+     for (i = 1; i < 20; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^40 - 2^0 */ fe25519_mul(t0, t0, z2_50_0);
+     fe25519_mul(t0, t0, z2_50_0);
 
-    /* 2^41 - 2^1 */ fe25519_square(t0, t0);
+     fe25519_square(t0, t0);
 
-    /* 2^50 - 2^10 */ for (i = 1; i < 10; i ++)
+     for (i = 1; i < 10; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^50 - 2^0 */ fe25519_mul(z2_50_0, t0, z2_10_0);
+     fe25519_mul(z2_50_0, t0, z2_10_0);
 
-    /* 2^51 - 2^1 */ fe25519_square(t0, z2_50_0);
+     fe25519_square(t0, z2_50_0);
 
-    /* 2^100 - 2^50 */ for (i = 1; i < 50; i ++)
+     for (i = 1; i < 50; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^100 - 2^0 */ fe25519_mul(z2_100_0, t0, z2_50_0);
+     fe25519_mul(z2_100_0, t0, z2_50_0);
 
-    /* 2^101 - 2^1 */ fe25519_square(t0, z2_100_0);
+     fe25519_square(t0, z2_100_0);
 
-    /* 2^200 - 2^100 */ for (i = 1; i < 100; i ++)
+     for (i = 1; i < 100; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^200 - 2^0 */ fe25519_mul(t0, t0, z2_100_0);
+     fe25519_mul(t0, t0, z2_100_0);
 
-    /* 2^250 - 2^50 */ for (i = 0; i < 50; i ++)
+     for (i = 0; i < 50; i ++)
     {
         fe25519_square(t0, t0);
     }
-    /* 2^250 - 2^0 */ fe25519_mul(t0, t0, z2_50_0);
+     fe25519_mul(t0, t0, z2_50_0);
 
-    /* 2^255 - 2^5 */ for (i = 0; i < 5; i ++)
+     for (i = 0; i < 5; i ++)
     {
          fe25519_square(t0, t0);
     }
-    /* 2^255 - 21 */ fe25519_mul(r, t0, z11);
+     fe25519_mul(r, t0, z11);
 }
 
 static void
@@ -440,34 +440,34 @@ fe25519_setone(
     }
 }
 
-/*
-static void
-swapPointersConditionally (void **p1, void **p2, uint8 condition)
-{
-    // Secure version of this code:
-    //
-    // if (condition)
-    // {
-    //     void *temp;
-    //     temp = *p2;
-    //     *p2 = *p1;
-    //     *p1 = temp;
-    // }
 
-    uintptr mask = condition;
-    uintptr val1 = (uintptr) *p1;
-    uintptr val2 = (uintptr) *p2;
-    uintptr temp = val2 ^ val1;
 
-    mask = (uintptr)( - (intptr) mask );
-    temp ^= mask & (temp ^ val1);
-    val1 ^= mask & (val1 ^ val2);
-    val2 ^= mask & (val2 ^ temp);
 
-    *p1 = (void *) val1;
-    *p2 = (void *) val2;
-}
-*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static void
 fe25519_cswap(

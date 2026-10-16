@@ -20,7 +20,7 @@
 #include "state.h"
 #include "wol.h"
 #include "wake.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "automation.h"
 #include "scheduler.h"
 #include "auto_reboot.h"
@@ -286,7 +286,7 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
         if (wake_request("telegram /wake") == ESP_OK) {
             state_mark_known_on();
             telegram_send_text(chat_id,
-                "OK: WOL enviado a cocopa01. Reintentando cada 10 s hasta 4 min "
+                "OK: WOL enviado a server. Reintentando cada 10 s hasta 4 min "
                 "o hasta que responda (ver /diag).");
         } else {
             telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
@@ -296,22 +296,22 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
         // que mantiene state_poll_task. El TCP en vivo está disponible
         // vía /ping. Aquí solo lectura de variables volatiles + un par
         // de heap_caps_get_free_size (O(num_bloques_heap)) = microsegundos.
-        cocopa01_state_t st = state_get();
+        server_state_t st = state_get();
         uint32_t in_ms = state_entered_at_ms();
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         uint32_t elapsed = (in_ms > 0) ? (now_ms - in_ms) : 0;
         uint32_t hours = elapsed / 3600000UL;
         uint32_t mins  = (elapsed % 3600000UL) / 60000UL;
-        uint32_t up_s = state_cocopa01_uptime_s();
+        uint32_t up_s = state_server_uptime_s();
         uint32_t poll_age_ms = state_last_poll_ms();
         uint32_t poll_age_s = (poll_age_ms > 0 && now_ms > poll_age_ms)
             ? (now_ms - poll_age_ms) / 1000UL
             : 0;
         const char *icon = "UNKNOWN";
         switch (st) {
-            case COCOPA01_STATE_ON:      icon = "ON";      break;
-            case COCOPA01_STATE_SUSPEND: icon = "SUSPEND"; break;
-            case COCOPA01_STATE_OFF:     icon = "OFF";     break;
+            case SERVER_STATE_ON:      icon = "ON";      break;
+            case SERVER_STATE_SUSPEND: icon = "SUSPEND"; break;
+            case SERVER_STATE_OFF:     icon = "OFF";     break;
             default: break;
         }
         bool alive_recent = state_last_poll_tcp_alive();
@@ -344,7 +344,7 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
                      "Uptime: %luh %lum  TCP/22: %s (poll %s)\n"
                      "Heap: %u free / %u min-ever  PSRAM: %u KB",
                      FIRMWARE_VERSION,
-                     CONFIG_COCOPA01_IP, icon, age_str,
+                     CONFIG_SERVER_IP, icon, age_str,
                      (unsigned long)up_h, (unsigned long)up_m,
                      alive_recent ? "UP" : "DOWN", poll_str,
                      (unsigned)heap_internal, (unsigned)heap_internal_min,
@@ -356,17 +356,17 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
                      "TCP/22: %s (poll %s)\n"
                      "Heap: %u free / %u min-ever  PSRAM: %u KB",
                      FIRMWARE_VERSION,
-                     CONFIG_COCOPA01_IP, icon, age_str,
+                     CONFIG_SERVER_IP, icon, age_str,
                      alive_recent ? "UP" : "DOWN", poll_str,
                      (unsigned)heap_internal, (unsigned)heap_internal_min,
                      (unsigned)(psram_free / 1024));
         }
         telegram_send_text(chat_id, buf);
     } else if (cmd_len == 5 && strncmp(cmd, "stats", 5) == 0) {
-        cocopa01_state_t st = state_get();
-        if (st != COCOPA01_STATE_ON) {
+        server_state_t st = state_get();
+        if (st != SERVER_STATE_ON) {
             telegram_send_text(chat_id,
-                "cocopa01 está en estado OFF/SUSPEND. Enciende el servidor con /wake para consultar estadísticas.");
+                "server está en estado OFF/SUSPEND. Enciende el servidor con /wake para consultar estadísticas.");
             return;
         }
         char *buf = malloc(2048);
@@ -374,28 +374,28 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
             telegram_send_text(chat_id, "ERR: out of memory allocating stats buffer");
             return;
         }
-        esp_err_t err = cocopa01_get_stats(buf, 2048);
+        esp_err_t err = server_get_stats(buf, 2048);
         if (err == ESP_OK) {
             telegram_send_text(chat_id, buf);
         } else if (err == ESP_ERR_TIMEOUT) {
-            telegram_send_text(chat_id, "ERR: timeout conectando al monitor de cocopa01 (:8085)");
+            telegram_send_text(chat_id, "ERR: timeout conectando al monitor de server (:8085)");
         } else {
-            telegram_send_text(chat_id, "ERR: cocopa01 está encendido pero el monitor no responde en puerto 8085");
+            telegram_send_text(chat_id, "ERR: server está encendido pero el monitor no responde en puerto 8085");
         }
         free(buf);
     } else if (cmd_len == 4 && strncmp(cmd, "ping", 4) == 0) {
-        // /ping: TCP live a cocopa01:22 (bloquea hasta el timeout, pero el
+        // /ping: TCP live a server:22 (bloquea hasta el timeout, pero el
         // usuario pidió explícitamente una probe fresca).
         uint32_t t0 = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        bool ok = cocopa01_tcp_alive(2000);
+        bool ok = server_tcp_alive(2000);
         uint32_t dt = ((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - t0);
         char buf[96];
         snprintf(buf, sizeof(buf), "ping %s:%d -> %s (%lu ms)",
-                 CONFIG_COCOPA01_IP, CONFIG_COCOPA01_SSH_PORT,
+                 CONFIG_SERVER_IP, CONFIG_SERVER_SSH_PORT,
                  ok ? "UP" : "DOWN", (unsigned long)dt);
         telegram_send_text(chat_id, buf);
     } else if (cmd_len == 4 && strncmp(cmd, "diag", 4) == 0) {
-        // /diag: heap/sockets/Uptime del ESP32, sin tocar cocopa01.
+        // /diag: heap/sockets/Uptime del ESP32, sin tocar server.
         // Útil para diagnosticar "por qué /status tarda" sin gastar TCP.
         size_t h_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         size_t h_int_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
@@ -464,69 +464,69 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
                  wifi_is_connected() ? "connected" : "down");
         telegram_send_text(chat_id, buf);
 } else if (cmd_len == 3 && strncmp(cmd, "off", 3) == 0) {
-    cocopa01_state_t cur = state_get();
-    if (cur == COCOPA01_STATE_SUSPEND) {
-        // cocopa01 is in S3; the NIC is down so /off would fail to
+    server_state_t cur = state_get();
+    if (cur == SERVER_STATE_SUSPEND) {
+        // server is in S3; the NIC is down so /off would fail to
         // reach it. ACPI doesn't allow S3 -> S5 directly, so we have
         // to go S3 -> S0 (via WOL) -> S5. Do the whole sequence in one
         // /off invocation so the user only has to type one command.
-        telegram_send_text(chat_id, "cocopa01 is in S3. Waking...");
+        telegram_send_text(chat_id, "server is in S3. Waking...");
         if (wake_request("telegram /off desde S3") != ESP_OK) {
             telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
             return;
         }
-        // Wait for cocopa01 to come back online. Resume from S3 is fast
+        // Wait for server to come back online. Resume from S3 is fast
         // (~5-10s) but allow up to 60s for BIOS + userspace.
         bool came_up = false;
         for (int i = 0; i < 30; i++) {
             vTaskDelay(pdMS_TO_TICKS(2000));
-            if (cocopa01_tcp_alive(2000)) {
+            if (server_tcp_alive(2000)) {
                 came_up = true;
                 break;
             }
         }
         if (!came_up) {
-            state_set(COCOPA01_STATE_OFF);
-            telegram_send_text(chat_id, "WARN: cocopa01 did not respond within 60s after WOL. Assuming already OFF.");
+            state_set(SERVER_STATE_OFF);
+            telegram_send_text(chat_id, "WARN: server did not respond within 60s after WOL. Assuming already OFF.");
             return;
         }
-        // cocopa01 is now in S0; send the shutdown command.
-        if (cocopa01_send_off() == ESP_OK) {
-            state_set(COCOPA01_STATE_OFF);
+        // server is now in S0; send the shutdown command.
+        if (server_send_off() == ESP_OK) {
+            state_set(SERVER_STATE_OFF);
             telegram_send_text(chat_id, "OK: woken from S3 and shutdown sent.");
         } else {
-            telegram_send_text(chat_id, "ERR: cocopa01 came back online but refused /off.");
+            telegram_send_text(chat_id, "ERR: server came back online but refused /off.");
         }
         return;
     }
-    if (cocopa01_tcp_alive(2000)) {
-        if (cocopa01_send_off() == ESP_OK) {
-            state_set(COCOPA01_STATE_OFF);
-            telegram_send_text(chat_id, "OK: cocopa01 shutdown sent.");
+    if (server_tcp_alive(2000)) {
+        if (server_send_off() == ESP_OK) {
+            state_set(SERVER_STATE_OFF);
+            telegram_send_text(chat_id, "OK: server shutdown sent.");
         } else {
-            telegram_send_text(chat_id, "ERR: cocopa01 reachable but refused shutdown.");
+            telegram_send_text(chat_id, "ERR: server reachable but refused shutdown.");
         }
     } else {
         // TCP not alive AND state is not SUSPEND (we handled that above),
-        // so cocopa01 is genuinely OFF or state is UNKNOWN. Trust the
+        // so server is genuinely OFF or state is UNKNOWN. Trust the
         // recent polling result; don't flip to OFF blindly.
-        if (cur == COCOPA01_STATE_OFF) {
-            telegram_send_text(chat_id, "OK: cocopa01 already off.");
+        if (cur == SERVER_STATE_OFF) {
+            telegram_send_text(chat_id, "OK: server already off.");
         } else {
-            telegram_send_text(chat_id, "OK: cocopa01 not reachable (state UNKNOWN); assuming off.");
-            state_set(COCOPA01_STATE_OFF);
+            telegram_send_text(chat_id, "OK: server not reachable (state UNKNOWN); assuming off.");
+            state_set(SERVER_STATE_OFF);
         }
     }
     } else if (cmd_len == 7 && strncmp(cmd, "suspend", 7) == 0) {
-        if (!cocopa01_tcp_alive(2000)) {
-            telegram_send_text(chat_id, "ERR: cocopa01 not reachable. /suspend requires the host to be ON.");
+        if (!server_tcp_alive(2000)) {
+            telegram_send_text(chat_id, "ERR: server not reachable. /suspend requires the host to be ON.");
             return;
         }
-        if (cocopa01_send_suspend() == ESP_OK) {
-            state_set(COCOPA01_STATE_SUSPEND);
-            telegram_send_text(chat_id, "OK: cocopa01 suspend sent.");
+        if (server_send_suspend() == ESP_OK) {
+            state_set(SERVER_STATE_SUSPEND);
+            telegram_send_text(chat_id, "OK: server suspend sent.");
         } else {
-            telegram_send_text(chat_id, "ERR: cocopa01 reachable but refused suspend.");
+            telegram_send_text(chat_id, "ERR: server reachable but refused suspend.");
         }
     } else if (cmd_len == 8 && strncmp(cmd, "schedule", 8) == 0) {
         handle_schedule_cmd(chat_id, args);
@@ -710,7 +710,7 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
             telegram_send_text(chat_id, buf);
         } else if (strcmp(subcmd, "defaults") == 0) {
             if (portmap_reset_defaults() == ESP_OK) {
-                telegram_send_text(chat_id, "OK: portmap reset to defaults (8080 -> 8080 http cocopa).");
+                telegram_send_text(chat_id, "OK: portmap reset to defaults (8080 -> 8080 http app).");
             } else {
                 telegram_send_text(chat_id, "ERR: failed to reset portmap");
             }
@@ -907,12 +907,12 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
                  "/wake - WOL magic packet\n"
                  "/status - fast status (no TCP probe, uses cached state)\n"
                  "/stats - server resource stats (CPU, RAM, disk, Docker)\n"
-                 "/ping - live TCP probe to cocopa01\n"
+                 "/ping - live TCP probe to server\n"
                  "/diag - heap/sockets/tasks diagnostics\n"
                  "/logs - download live system logs as .txt file\n"
                  "/crashlog - download last crash/stall log (RTC)\n"
                  "/info - hardware info\n"
-                 "/off - power off cocopa01 (auto-wake if S3)\n"
+                 "/off - power off server (auto-wake if S3)\n"
                  "/suspend - S3 RAM sleep\n"
                  "/schedule - scheduled daily wake/off (set wake|off HH:MM, reset)\n"
                  "/reboot - reboot ESP32 now, or set timer (/reboot help)\n"
@@ -1333,7 +1333,7 @@ void telegram_poll_task(void *arg) {
         ESP_LOGW(TAG, "NVS fue borrada en este boot — avisando por Telegram");
         telegram_broadcast(
             "⚠️ ESP32 reinició con NVS borrada (erase-on-error). "
-            "Perdiste: /schedule, /autoset, /portmap defaults, cocopa01 boot_time, "
+            "Perdiste: /schedule, /autoset, /portmap defaults, server boot_time, "
             "cert funnel, peers cacheados de Tailscale. "
             "Reconfigurar: /schedule set wake HH:MM, /autoset, /portmap defaults. "
             "Serial: `acme renew` si querés re-emitir el cert ya.");

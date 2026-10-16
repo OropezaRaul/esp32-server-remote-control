@@ -1,4 +1,4 @@
-#include "cocopa01_client.h"
+#include "server_client.h"
 
 #include <esp_log.h>
 #include <esp_http_client.h>
@@ -11,20 +11,20 @@
 
 #include "sdkconfig.h"
 
-static const char *TAG = "cocopa01";
+static const char *TAG = "server";
 
-// POST /<verb> a cocopa01 vía BSD sockets directos + O_NONBLOCK + select().
+// POST /<verb> a server vía BSD sockets directos + O_NONBLOCK + select().
 //
 // ANTES usaba esp_http_client_perform() con timeout_ms=4000. Problema
 // documentado en sesión 20 (main/state.c): en IDF v5.3 el SSL transport se
 // inicializa siempre en esp_http_client_init() y esp_tls_plain_tcp_connect()
 // reusa timeouts stale del contexto SSL, ignorando el timeout_ms → si
-// cocopa01 no responde ARP/SYN (apagado, ruta muerta), el POST se colgaba
+// server no responde ARP/SYN (apagado, ruta muerta), el POST se colgaba
 // 60-126s. Ese cuelgue ocurría DENTRO del task de Telegram (handlers /off,
 // /suspend) y del scheduler/automation: el bot quedaba mudo minutos y
 // encolaba todo. Con BSD sockets + select() el connect es determinista:
 // 2s de timeout duro siempre.
-static esp_err_t cocopa01_post(const char *verb) {
+static esp_err_t server_post(const char *verb) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         ESP_LOGE(TAG, "[%s] socket() failed errno=%d", verb, errno);
@@ -32,7 +32,7 @@ static esp_err_t cocopa01_post(const char *verb) {
     }
 
     // O_NONBLOCK + select() para forzar timeout REAL (mismo approach que
-    // cocopa01_tcp_alive() y state.c::cocopa01_http_get_body).
+    // server_tcp_alive() y state.c::server_http_get_body).
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags == -1 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
         close(sock);
@@ -42,8 +42,8 @@ static esp_err_t cocopa01_post(const char *verb) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(CONFIG_COCOPA01_HTTP_PORT);
-    addr.sin_addr.s_addr = inet_addr(CONFIG_COCOPA01_IP);
+    addr.sin_port = htons(CONFIG_SERVER_HTTP_PORT);
+    addr.sin_addr.s_addr = inet_addr(CONFIG_SERVER_IP);
 
     int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) {
@@ -86,7 +86,7 @@ static esp_err_t cocopa01_post(const char *verb) {
         "Content-Length: 0\r\n"
         "Connection: close\r\n"
         "\r\n",
-        verb, CONFIG_COCOPA01_IP, CONFIG_COCOPA01_SHUTDOWN_SECRET);
+        verb, CONFIG_SERVER_IP, CONFIG_SERVER_SHUTDOWN_SECRET);
     if (req_len <= 0 || req_len >= (int)sizeof(req)) {
         close(sock);
         return ESP_FAIL;
@@ -138,19 +138,19 @@ static esp_err_t cocopa01_post(const char *verb) {
     return ESP_OK;
 }
 
-esp_err_t cocopa01_send_off(void) {
-    return cocopa01_post("off");
+esp_err_t server_send_off(void) {
+    return server_post("off");
 }
 
-esp_err_t cocopa01_send_suspend(void) {
-    return cocopa01_post("suspend");
+esp_err_t server_send_suspend(void) {
+    return server_post("suspend");
 }
 
-bool cocopa01_tcp_port_alive(uint16_t port, int timeout_ms) {
-    return cocopa01_tcp_port_alive_at(CONFIG_COCOPA01_IP, port, timeout_ms);
+bool server_tcp_port_alive(uint16_t port, int timeout_ms) {
+    return server_tcp_port_alive_at(CONFIG_SERVER_IP, port, timeout_ms);
 }
 
-bool cocopa01_tcp_port_alive_at(const char *ip, uint16_t port, int timeout_ms) {
+bool server_tcp_port_alive_at(const char *ip, uint16_t port, int timeout_ms) {
     if (ip == NULL || *ip == 0) return false;
     if (timeout_ms <= 0) timeout_ms = 300;
     if (timeout_ms > 1000) timeout_ms = 1000;
@@ -161,7 +161,7 @@ bool cocopa01_tcp_port_alive_at(const char *ip, uint16_t port, int timeout_ms) {
     // O_NONBLOCK + select() para forzar timeout REAL. En lwIP v5.3 el
     // connect() bloqueante ignora SO_SNDTIMEO y puede colgarse minutos
     // retransmitiendo SYN si la IP destino no responde ARP (caso típico:
-    // cocopa01 apagado). Ver detalle en main/state.c:cocopa01_http_get_body.
+    // server apagado). Ver detalle en main/state.c:server_http_get_body.
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags == -1 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
         close(sock);
@@ -202,19 +202,19 @@ bool cocopa01_tcp_port_alive_at(const char *ip, uint16_t port, int timeout_ms) {
     return true;
 }
 
-bool cocopa01_tcp_alive(int timeout_ms) {
-    return cocopa01_tcp_port_alive(CONFIG_COCOPA01_SSH_PORT, timeout_ms);
+bool server_tcp_alive(int timeout_ms) {
+    return server_tcp_port_alive(CONFIG_SERVER_SSH_PORT, timeout_ms);
 }
 
-bool cocopa01_web_alive(int timeout_ms) {
+bool server_web_alive(int timeout_ms) {
     // Probar Nginx reverse proxy (:8080) primero, o servicio de shutdown HTTP (:9999)
-    if (cocopa01_tcp_port_alive(8080, timeout_ms)) {
+    if (server_tcp_port_alive(8080, timeout_ms)) {
         return true;
     }
-    return cocopa01_tcp_port_alive(CONFIG_COCOPA01_HTTP_PORT, timeout_ms);
+    return server_tcp_port_alive(CONFIG_SERVER_HTTP_PORT, timeout_ms);
 }
 
-int cocopa01_http_probe_at(const char *ip, uint16_t port, const char *host_header,
+int server_http_probe_at(const char *ip, uint16_t port, const char *host_header,
                            const char *path, int timeout_ms) {
     if (ip == NULL || *ip == 0) return -1;
     if (host_header == NULL || *host_header == 0) host_header = ip;
@@ -222,7 +222,7 @@ int cocopa01_http_probe_at(const char *ip, uint16_t port, const char *host_heade
     if (timeout_ms <= 0) timeout_ms = 1000;
     if (timeout_ms > 3000) timeout_ms = 3000;
 
-    // Mismo approach que cocopa01_post()/state.c:cocopa01_http_get_body: BSD
+    // Mismo approach que server_post()/state.c:server_http_get_body: BSD
     // sockets + O_NONBLOCK + select() para que el timeout sea REAL y corto.
     // Nada de esp_http_client: la sonda corre cada segundo y no puede dejar un
     // worker colgado (los timeouts stale del SSL transport en IDF v5.3 ya
@@ -340,8 +340,8 @@ static esp_err_t do_get_stats(const char *host_ip, char *buf, size_t buf_size) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-#ifdef CONFIG_COCOPA01_MONITOR_PORT
-    addr.sin_port = htons(CONFIG_COCOPA01_MONITOR_PORT);
+#ifdef CONFIG_SERVER_MONITOR_PORT
+    addr.sin_port = htons(CONFIG_SERVER_MONITOR_PORT);
 #else
     addr.sin_port = htons(8085);
 #endif
@@ -434,14 +434,14 @@ static esp_err_t do_get_stats(const char *host_ip, char *buf, size_t buf_size) {
     return ESP_OK;
 }
 
-esp_err_t cocopa01_get_stats(char *buf, size_t buf_size) {
-    esp_err_t err = do_get_stats(CONFIG_COCOPA01_IP, buf, buf_size);
+esp_err_t server_get_stats(char *buf, size_t buf_size) {
+    esp_err_t err = do_get_stats(CONFIG_SERVER_IP, buf, buf_size);
     if (err == ESP_OK) return ESP_OK;
 
-    if (strlen(CONFIG_COCOPA01_TS_IP) > 0 && strcmp(CONFIG_COCOPA01_IP, CONFIG_COCOPA01_TS_IP) != 0) {
+    if (strlen(CONFIG_SERVER_TS_IP) > 0 && strcmp(CONFIG_SERVER_IP, CONFIG_SERVER_TS_IP) != 0) {
         ESP_LOGW(TAG, "[stats] LAN probe to %s failed (%s), trying Tailscale IP %s",
-                 CONFIG_COCOPA01_IP, esp_err_to_name(err), CONFIG_COCOPA01_TS_IP);
-        err = do_get_stats(CONFIG_COCOPA01_TS_IP, buf, buf_size);
+                 CONFIG_SERVER_IP, esp_err_to_name(err), CONFIG_SERVER_TS_IP);
+        err = do_get_stats(CONFIG_SERVER_TS_IP, buf, buf_size);
     }
     return err;
 }

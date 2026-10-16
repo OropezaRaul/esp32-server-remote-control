@@ -34,7 +34,7 @@ CONFIG_LWIP_SO_REUSE_RXTOALL=y
 # Habilitar timeouts en sockets BSD. Sin esto, setsockopt() con
 # SO_SNDTIMEO/SO_RCVTIMEO son no-ops y connect/send/recv pueden bloquear
 # minutos si el peer no responde (TCP retransmite). Esto rompia
-# query_state() y los handlers de Telegram cuando cocopa01 estaba apagado:
+# query_state() y los handlers de Telegram cuando server estaba apagado:
 # el primer poll quedaba UNKNOWN hasta 60-120s.
 CONFIG_LWIP_SO_SNDTIMEO=y
 CONFIG_LWIP_SO_RCVTIMEO=y
@@ -72,15 +72,15 @@ CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 
-# === TLS: keep ca_cert bundle small for cocopa01 LAN (HTTP only) ===
+# === TLS: keep ca_cert bundle small for server LAN (HTTP only) ===
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # === MicroLink: Tailscale + WireGuard ===
 # We pull the microlink component, which declares its own Kconfig.
 # Below are key knobs from microlink/configs/ml_config.h defaults.
 
-# Peer prioritario (sesión 23): cocopa01 -> slot WireGuard GARANTIZADO
-# aunque la tabla de peers esté llena (evicta al LRU). IP VPN de cocopa01.
+# Peer prioritario (sesión 23): server -> slot WireGuard GARANTIZADO
+# aunque la tabla de peers esté llena (evicta al LRU). IP VPN de server.
 CONFIG_ML_PRIORITY_PEER_IP="100.64.0.2"
 
 # Component-specific defaults are in components/microlink/Kconfig

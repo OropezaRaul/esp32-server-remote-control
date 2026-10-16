@@ -1,10 +1,10 @@
-/**
- * @file ml_config_html.h
- * @brief Embedded HTML/CSS/JS config page for MicroLink HTTP server
- *
- * Single-page dashboard with vanilla HTML + CSS + Fetch API.
- * Sections: Monitor, WiFi Networks, Peer Allowlist, Device Settings.
- */
+
+
+
+
+
+
+
 
 #pragma once
 
@@ -17,7 +17,7 @@ static const char CONFIG_PAGE_HTML[] =
 "body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:0}"
 ".wrap{max-width:1100px;margin:0 auto;padding:20px}"
 
-/* Header bar */
+
 ".hdr{background:#161b22;border-bottom:1px solid #30363d;padding:14px 20px;display:flex;"
 "align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}"
 ".hdr h1{font-size:1.4em;color:#58a6ff;font-weight:700}"
@@ -28,14 +28,14 @@ static const char CONFIG_PAGE_HTML[] =
 ".hdr-ip{font-family:monospace;font-size:1em;color:#58a6ff;font-weight:600}"
 ".hdr-host{color:#8b949e;font-size:.85em}"
 
-/* Section cards */
+
 ".section{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:16px;overflow:hidden}"
 ".section-hdr{padding:12px 16px;border-bottom:1px solid #30363d;display:flex;"
 "align-items:center;justify-content:space-between}"
 ".section-hdr h2{font-size:1.05em;color:#e6edf3;font-weight:600}"
 ".section-body{padding:16px}"
 
-/* Monitor grid */
+
 ".mon-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}"
 ".mon-card{background:#0d1117;padding:14px;border-radius:6px;border:1px solid #21262d}"
 ".mon-card .val{font-size:1.6em;color:#58a6ff;font-weight:700;line-height:1.2}"
@@ -46,7 +46,7 @@ static const char CONFIG_PAGE_HTML[] =
 ".task-row .tn{color:#58a6ff;font-family:monospace;font-weight:600}"
 ".task-row .ts{color:#8b949e}"
 
-/* Settings form */
+
 ".form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 20px}"
 "@media(max-width:640px){.form-grid{grid-template-columns:1fr}}"
 ".form-group{display:flex;flex-direction:column}"
@@ -73,7 +73,7 @@ static const char CONFIG_PAGE_HTML[] =
 ".msg-ok{background:#23863620;color:#3fb950;display:block;border:1px solid #23863640}"
 ".msg-err{background:#da363320;color:#f85149;display:block;border:1px solid #da363340}"
 
-/* Peer list */
+
 ".peer-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0d1117;"
 "border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d}"
 ".peer-item .ip{font-family:monospace;color:#58a6ff;font-weight:500;min-width:120px}"
@@ -89,7 +89,7 @@ static const char CONFIG_PAGE_HTML[] =
 ".add-form input{flex:1}"
 ".peer-list{margin:8px 0}"
 
-/* WiFi list */
+
 ".wifi-item{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0d1117;"
 "border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d}"
 ".wifi-item .num{color:#484f58;font-weight:700;min-width:24px;text-align:center}"
@@ -98,12 +98,12 @@ static const char CONFIG_PAGE_HTML[] =
 ".wifi-btns{display:flex;gap:4px}"
 ".wifi-btns button{padding:4px 8px;font-size:.75em}"
 
-/* Empty state */
+
 ".empty{color:#484f58;font-size:.9em;padding:20px;text-align:center}"
 
 "</style></head><body>"
 
-/* ---- Header ---- */
+
 "<div class='hdr'>"
 "<div><h1>MicroLink</h1>"
 "<span class='hdr-host' id='hostName'></span></div>"
@@ -114,7 +114,7 @@ static const char CONFIG_PAGE_HTML[] =
 
 "<div class='wrap'>"
 
-/* ---- Monitor Section ---- */
+
 "<div class='section'>"
 "<div class='section-hdr'><h2>System Monitor</h2>"
 "<span style='color:#8b949e;font-size:.75em' id='monAutoRefresh'>auto-refresh 3s</span></div>"
@@ -132,7 +132,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<div class='task-list' id='mTasks'></div>"
 "</div></div>"
 
-/* ---- WiFi Networks Section ---- */
+
 "<div class='section'>"
 "<div class='section-hdr'><h2>WiFi Networks</h2>"
 "<span style='color:#8b949e;font-size:.75em'>priority order &mdash; restart required</span></div>"
@@ -148,7 +148,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<div class='msg' id='wifiMsg'></div>"
 "</div></div>"
 
-/* ---- Peers Section ---- */
+
 "<div class='section'>"
 "<div class='section-hdr'><h2>Peer Allowlist</h2>"
 "<span style='color:#8b949e;font-size:.75em'>changes apply immediately</span></div>"
@@ -165,7 +165,7 @@ static const char CONFIG_PAGE_HTML[] =
 "</div></div>"
 
 
-/* ---- Settings Section ---- */
+
 "<div class='section'>"
 "<div class='section-hdr'><h2>Device Settings</h2>"
 "<span style='color:#8b949e;font-size:.75em'>all changes require restart</span></div>"
@@ -192,7 +192,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<div class='form-group'><label>PPP Password</label>"
 "<input type='password' id='ppp_pass' placeholder='blank = none'></div>"
 
-/* Advanced */
+
 "<div class='form-group full' style='margin-top:8px'>"
 "<label style='color:#58a6ff;font-size:.85em;font-weight:600'>Advanced</label></div>"
 
@@ -211,7 +211,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<input type='text' id='ctrl_host' placeholder='Tailscale (default)'>"
 "<div class='hint'>For Headscale/Ionscale. Empty = Tailscale</div></div>"
 
-/* Debug */
+
 "<div class='form-group full' style='margin-top:8px'>"
 "<label style='color:#58a6ff;font-size:.85em;font-weight:600'>Debug Logging</label></div>"
 "<div class='form-group full'><div class='chk-grid'>"
@@ -228,9 +228,9 @@ static const char CONFIG_PAGE_HTML[] =
 "<div class='msg' id='settingsMsg'></div>"
 "</div></div>"
 
-"</div>"  /* .wrap */
+"</div>"  
 
-/* ---- JavaScript ---- */
+
 "<script>"
 "let allowedPeers=[];"
 "let wifiNetworks=[];"
@@ -249,7 +249,7 @@ static const char CONFIG_PAGE_HTML[] =
 "return m+'m '+(s%60|0)+'s';"
 "}"
 
-/* ---- Status bar ---- */
+
 "async function loadStatus(){"
 "try{"
 "const r=await fetch('/api/status');"
@@ -259,13 +259,13 @@ static const char CONFIG_PAGE_HTML[] =
 "}catch(e){document.getElementById('vpnIp').textContent='offline';}"
 "}"
 
-/* ---- Monitor ---- */
+
 "async function loadMonitor(){"
 "try{"
 "const r=await fetch('/api/monitor');"
 "const d=await r.json();"
 "document.getElementById('mTemp').textContent=d.temp_c!=null?d.temp_c+'\\u00b0C':'N/A';"
-/* Signal: show RSSI for wifi, just 'Cellular' for cell */
+
 "var sig='N/A';"
 "if(d.connection==='cellular'){sig='Cellular';}else if(d.rssi!=null){sig=d.rssi+' dBm';}"
 "document.getElementById('mRssi').textContent=sig;"
@@ -275,7 +275,7 @@ static const char CONFIG_PAGE_HTML[] =
 "document.getElementById('mMinHeap').textContent=(d.min_free_heap/1024|0)+' KB';"
 "document.getElementById('mDerp').textContent=d.derp_home_region>0?"
 "'#'+d.derp_home_region+(d.derp_connected?' (up)':' (down)'):'--';"
-/* Connection badge */
+
 "var cb=document.getElementById('connBadge');"
 "if(d.connection==='cellular'){"
 "cb.textContent='Cellular';cb.className='conn-badge conn-cell';"
@@ -284,11 +284,11 @@ static const char CONFIG_PAGE_HTML[] =
 "cb.textContent='WiFi';cb.className='conn-badge conn-wifi';"
 "document.querySelector('.mon-card:nth-child(2) .lbl').textContent='WiFi RSSI';"
 "}"
-/* Peer count card */
+
 "const sr=await fetch('/api/status');"
 "const sd=await sr.json();"
 "document.getElementById('mPeers').textContent=sd.peer_count||0;"
-/* Task stacks */
+
 "var te=document.getElementById('mTasks');"
 "if(d.tasks){"
 "te.innerHTML=Object.entries(d.tasks).map(([n,t])=>"
@@ -299,7 +299,7 @@ static const char CONFIG_PAGE_HTML[] =
 "}catch(e){}"
 "}"
 
-/* ---- Settings ---- */
+
 "async function loadSettings(){"
 "try{"
 "const r=await fetch('/api/settings');"
@@ -352,7 +352,7 @@ static const char CONFIG_PAGE_HTML[] =
 "}catch(e){showMsg('settingsMsg','Save failed: '+e,false);}"
 "}"
 
-/* ---- WiFi Networks ---- */
+
 "async function loadWifi(){"
 "try{"
 "const r=await fetch('/api/wifi');"
@@ -420,7 +420,7 @@ static const char CONFIG_PAGE_HTML[] =
 "}catch(e){showMsg('wifiMsg','Save failed: '+e,false);}"
 "}"
 
-/* ---- Peer Allowlist ---- */
+
 "async function loadAllowed(){"
 "try{"
 "const r=await fetch('/api/peers/allowed');"
@@ -474,14 +474,14 @@ static const char CONFIG_PAGE_HTML[] =
 
 
 
-/* ---- Restart ---- */
+
 "async function doRestart(){"
 "if(!confirm('Restart the device?'))return;"
 "try{await fetch('/api/restart',{method:'POST'});}catch(e){}"
 "document.getElementById('vpnIp').textContent='Restarting...';"
 "}"
 
-/* ---- Init ---- */
+
 "loadStatus();loadWifi();loadSettings();loadAllowed();loadMonitor();"
 "setInterval(loadStatus,5000);"
 "setInterval(loadMonitor,3000);"

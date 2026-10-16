@@ -17,7 +17,7 @@
 #include "state.h"
 #include "wake.h"
 #include "wol.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "automation.h"
 #include "scheduler.h"
 #include "telegram.h"
@@ -39,18 +39,18 @@ static httpd_handle_t s_server_funnel = NULL;
 
 // TECHO DE SEGURIDAD, ya no el camino normal.
 //
-// Antes este valor era la decision completa: tras ver cocopa01 ON el portal
+// Antes este valor era la decision completa: tras ver server ON el portal
 // esperaba 45 s fijos antes de redirigir, y hasta 75 s si no habia podido leer
-// /state en vivo. Medido en campo: el Funnel de cocopa01 ya servia 200 a los ~46 s
+// /state en vivo. Medido en campo: el Funnel de server ya servia 200 a los ~46 s
 // del WOL y el navegador no entraba hasta los ~78 s. Esos ~25 s eran el reloj
 // esperando a ciegas, y un reloj no sabe nada del arranque real.
 //
 // Ahora la decision la toma la EVIDENCIA (main/ready_probe.c): una sonda que el
-// ESP32 le hace al propio destino, o el aviso que cocopa01 manda con
+// ESP32 le hace al propio destino, o el aviso que server manda con
 // GET /notify/ready en cuanto se verifica a si mismo. Este techo solo se consulta
 // cuando no hay ninguna medicion disponible (sin tailnet, TLS roto, :9999 caido),
-// para que el portal nunca se quede girando para siempre. Ver cocopa01_target_ready.
-#define COCOPA01_STACK_SETTLE_MS 45000UL
+// para que el portal nunca se quede girando para siempre. Ver server_target_ready.
+#define SERVER_STACK_SETTLE_MS 45000UL
 
 static void send_text(httpd_req_t *req, const char *status, const char *body) {
     httpd_resp_set_status(req, status);
@@ -92,7 +92,7 @@ static esp_err_t handle_wol(httpd_req_t *req) {
     if (has_mac) {
         // /wol?mac=XX:XX... es una herramienta de diagnostico con MAC
         // arbitraria: no entra al supervisor (que siempre apunta a
-        // CONFIG_COCOPA01_MAC_HEX), solo manda la rafaga puntual.
+        // CONFIG_SERVER_MAC_HEX), solo manda la rafaga puntual.
         ESP_LOGI(TAG, "  mac=%s (rafaga puntual, sin supervisor)", mac_str);
         esp_err_t err = wol_send_str(mac_str);
         if (err != ESP_OK) {
@@ -105,7 +105,7 @@ static esp_err_t handle_wol(httpd_req_t *req) {
     }
 
     // Camino normal: el supervisor manda la rafaga YA y reintenta solo cada
-    // 10 s hasta que cocopa01 responda (maximo 4 min). Antes este handler
+    // 10 s hasta que server responda (maximo 4 min). Antes este handler
     // mandaba una unica rafaga y contestaba "retry in 30-60s" sin reintentar
     // nada: si esa rafaga se perdia, nadie volvia a intentarlo.
     esp_err_t err = wake_request("http /wol");
@@ -118,7 +118,7 @@ static esp_err_t handle_wol(httpd_req_t *req) {
     char body[160];
     snprintf(body, sizeof(body),
              "waking up -- reintentando WOL cada %us hasta %u min o hasta que "
-             "cocopa01 responda. Estado: /diag\n",
+             "server responda. Estado: /diag\n",
              (unsigned)(WAKE_RETRY_MS / 1000), (unsigned)(WAKE_WINDOW_MS / 60000));
     send_text(req, "202 Accepted", body);
     return ESP_OK;
@@ -127,20 +127,20 @@ static esp_err_t handle_wol(httpd_req_t *req) {
 static esp_err_t handle_status(httpd_req_t *req) {
     ESP_LOGI(TAG, "GET /status");
     automation_kick();
-    cocopa01_state_t st = state_get();
+    server_state_t st = state_get();
     uint32_t in_ms = state_entered_at_ms();
     uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     uint32_t elapsed = (in_ms > 0) ? (now_ms - in_ms) : 0;
-    uint32_t boot_time = state_cocopa01_boot_time();
-    uint32_t uptime_s = state_cocopa01_uptime_s();
+    uint32_t boot_time = state_server_boot_time();
+    uint32_t uptime_s = state_server_uptime_s();
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "state", cocopa01_state_str(st));
+    cJSON_AddStringToObject(root, "state", server_state_str(st));
     cJSON_AddNumberToObject(root, "state_age_ms", elapsed);
-    cJSON_AddNumberToObject(root, "cocopa01_boot_time", boot_time);
-    cJSON_AddNumberToObject(root, "cocopa01_uptime_s", uptime_s);
-    cJSON_AddStringToObject(root, "cocopa01_ip", CONFIG_COCOPA01_IP);
-    cJSON_AddStringToObject(root, "cocopa01_mac", CONFIG_COCOPA01_MAC_HEX);
+    cJSON_AddNumberToObject(root, "server_boot_time", boot_time);
+    cJSON_AddNumberToObject(root, "server_uptime_s", uptime_s);
+    cJSON_AddStringToObject(root, "server_ip", CONFIG_SERVER_IP);
+    cJSON_AddStringToObject(root, "server_mac", CONFIG_SERVER_MAC_HEX);
     cJSON_AddStringToObject(root, "wake", wake_status_text());
     cJSON_AddNumberToObject(root, "heap_free", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(root, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -211,9 +211,9 @@ static esp_err_t handle_root(httpd_req_t *req) {
         "<h1>ESP32 Remote Control</h1>"
         "<p>Entrada pública Tailscale con Auto-WOL</p>"
         "<div class='grid'>"
-        "<a class='btn btn-primary' href='/cocopa'>🍔 Entrar a CocopaSystem (Auto-WOL)</a>"
-        "<a class='btn' href='/monitor'>📊 CocopaMonitor (:8085)</a>"
-        "<a class='btn btn-sec' href='/app'>✨ Entrar a Kiubart (Auto-WOL)</a>"
+        "<a class='btn btn-primary' href='/app'>🍔 Entrar a the web app (Auto-WOL)</a>"
+        "<a class='btn' href='/monitor'>📊 Monitor (:8085)</a>"
+        "<a class='btn btn-sec' href='/kiosk'>✨ Entrar a Kiubart (Auto-WOL)</a>"
         "<a class='btn btn-sec' href='/wol'>⚡ Enviar WOL ahora</a>"
         "<a class='btn btn-sec' href='/status'>ℹ️ Estado del Sistema (/status)</a>"
         "</div></body></html>";
@@ -284,25 +284,25 @@ static bool gate_is_lan_peer(const char *ip_str) {
 
 static const char *s_ready_source = "ninguna";
 
-static bool cocopa01_target_ready(void) {
-    // cocopa01 dijo que SU ruta publica no sirve: manda por encima de todo lo que
+static bool server_target_ready(void) {
+    // server dijo que SU ruta publica no sirve: manda por encima de todo lo que
     // el ESP32 puede ver solo (el tunel cae aunque la LAN siga sirviendo, y ahi
     // nuestra sonda daria listo y el cliente se comeria un 502 sin cura).
     if (ready_public_broken()) { s_ready_source = "servidor:roto"; return false; }
     if (ready_is_ready()) { s_ready_source = "sonda"; return true; }
     if (state_stack_never_stopped()) { s_ready_source = "resume-s3"; return true; }
-    if (state_stack_settled(COCOPA01_STACK_SETTLE_MS)) { s_ready_source = "techo"; return true; }
+    if (state_stack_settled(SERVER_STACK_SETTLE_MS)) { s_ready_source = "techo"; return true; }
     s_ready_source = "ninguna";
     return false;
 }
 
-static bool cocopa01_verified_alive(cocopa01_state_t st, bool cached_tcp) {
+static bool server_verified_alive(server_state_t st, bool cached_tcp) {
     (void)cached_tcp;
-    if (st != COCOPA01_STATE_ON) return false;
+    if (st != SERVER_STATE_ON) return false;
     // El servidor dijo que su ruta publica no sirve: ni sonda ni heuristica pueden
     // abrir el gate contra su palabra.
     if (ready_public_broken()) return false;
-    // Evidencia directa y reciente (sonda con 200 real, o aviso de cocopa01). Es
+    // Evidencia directa y reciente (sonda con 200 real, o aviso de server). Es
     // MAS fuerte que un connect() a :22: la sonda ya vio al backend contestando, y
     // con la maquina recien encendida y saturada por Docker un connect() de 250 ms
     // puede dar falso negativo y costingnos un viaje extra del cliente.
@@ -310,8 +310,8 @@ static bool cocopa01_verified_alive(cocopa01_state_t st, bool cached_tcp) {
     // Sin evidencia directa (resume desde S3, o el techo de seguridad) si exigimos
     // un connect() real en el instante del 302: ahi la maquina esta estable y
     // cuesta 1-3 ms, y es la unica red contra un 302 a un servidor caido.
-    if (state_stack_never_stopped() || state_stack_settled(COCOPA01_STACK_SETTLE_MS)) {
-        return cocopa01_tcp_alive(250);
+    if (state_stack_never_stopped() || state_stack_settled(SERVER_STACK_SETTLE_MS)) {
+        return server_tcp_alive(250);
     }
     return false;
 }
@@ -320,13 +320,13 @@ static bool cocopa01_verified_alive(cocopa01_state_t st, bool cached_tcp) {
 
 
 
-static bool cocopa01_ready_cached(void) {
-    if (state_get() != COCOPA01_STATE_ON) return false;
+static bool server_ready_cached(void) {
+    if (state_get() != SERVER_STATE_ON) return false;
     // Con latch fresco no exigimos nada mas: el /state en vivo puede tardar 30 s en
     // llegar cuando la maquina viene de un arranque, y hacer esperar al splash por
     // el poll seria volver aicronizar con el reloj que acabamos de eliminar.
     if (ready_is_ready()) return true;
-    return cocopa01_target_ready() && state_last_poll_tcp_alive();
+    return server_target_ready() && state_last_poll_tcp_alive();
 }
 
 static esp_err_t send_wake_splash(httpd_req_t *req, const char *target_url, const char *title) {
@@ -401,25 +401,25 @@ static esp_err_t handle_gate(httpd_req_t *req) {
     const char *location;
     char buf[192];
 
-    if (req->handle == s_server_funnel && strlen(CONFIG_COCOPA01_FUNNEL_URL) > 0) {
-        // Request came via Tailscale Funnel (:443) — redirect to cocopa01 Funnel URL
-        location = CONFIG_COCOPA01_FUNNEL_URL;
+    if (req->handle == s_server_funnel && strlen(CONFIG_SERVER_FUNNEL_URL) > 0) {
+        // Request came via Tailscale Funnel (:443) — redirect to server Funnel URL
+        location = CONFIG_SERVER_FUNNEL_URL;
     } else {
-        // Request came via LAN/Tailscale direct (:80) — redirect to cocopa01 Tailscale IP
+        // Request came via LAN/Tailscale direct (:80) — redirect to server Tailscale IP
         snprintf(buf, sizeof(buf), "http://%s:%u/",
-                 CONFIG_COCOPA01_TS_IP, (unsigned)8080);
+                 CONFIG_SERVER_TS_IP, (unsigned)8080);
         location = buf;
     }
 
-    cocopa01_state_t st = state_get();
-    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    server_state_t st = state_get();
+    bool tcp_up = server_verified_alive(st, state_last_poll_tcp_alive());
 
     if (!tcp_up) {
-        ESP_LOGI(TAG, "gate: cocopa01 down or not verified ON (st=%s), "
+        ESP_LOGI(TAG, "gate: server down or not verified ON (st=%s), "
                       "pidiendo despertar al supervisor",
-                 cocopa01_state_str(st));
+                 server_state_str(st));
         wake_request("gate");
-        return send_wake_splash(req, location, "Iniciando cocopa01 (/gate)...");
+        return send_wake_splash(req, location, "Iniciando server (/gate)...");
     }
 
     ESP_LOGI(TAG, "gate: alive, direct redirect -> %s", location);
@@ -429,29 +429,29 @@ static esp_err_t handle_gate(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ─── /monitor: wake-on-demand + redirect to CocopaMonitor (:8085) ──────
+// ─── /monitor: wake-on-demand + redirect to Monitor (:8085) ──────
 
 static esp_err_t handle_monitor(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /monitor (redirect to CocopaMonitor)");
+    ESP_LOGI(TAG, "GET /monitor (redirect to Monitor)");
     automation_kick();
 
     char location[192];
-#ifdef CONFIG_COCOPA01_MONITOR_PORT
-    unsigned port = (unsigned)CONFIG_COCOPA01_MONITOR_PORT;
+#ifdef CONFIG_SERVER_MONITOR_PORT
+    unsigned port = (unsigned)CONFIG_SERVER_MONITOR_PORT;
 #else
     unsigned port = 8085;
 #endif
-    snprintf(location, sizeof(location), "http://%s:%u/", CONFIG_COCOPA01_TS_IP, port);
+    snprintf(location, sizeof(location), "http://%s:%u/", CONFIG_SERVER_TS_IP, port);
 
-    cocopa01_state_t st = state_get();
-    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    server_state_t st = state_get();
+    bool tcp_up = server_verified_alive(st, state_last_poll_tcp_alive());
 
     if (!tcp_up) {
-        ESP_LOGI(TAG, "monitor: cocopa01 down or not verified ON (st=%s), "
+        ESP_LOGI(TAG, "monitor: server down or not verified ON (st=%s), "
                       "pidiendo despertar al supervisor",
-                 cocopa01_state_str(st));
+                 server_state_str(st));
         wake_request("monitor");
-        return send_wake_splash(req, location, "Iniciando CocopaMonitor (:8085)...");
+        return send_wake_splash(req, location, "Iniciando Monitor (:8085)...");
     }
 
     ESP_LOGI(TAG, "monitor: alive, redirect -> %s", location);
@@ -461,26 +461,26 @@ static esp_err_t handle_monitor(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ─── /cocopa: path-based redirect to cocopa01 Funnel (with WOL) ──────────
+// ─── /app: path-based redirect to server Funnel (with WOL) ──────────
 
-static esp_err_t handle_cocopa(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /cocopa");
+static esp_err_t handle_app(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /app");
     automation_kick();
 
-    if (strlen(CONFIG_GATE_COCOPA_URL) == 0) {
-        ESP_LOGW(TAG, "cocopa: GATE_COCOPA_URL not configured, returning 503");
+    if (strlen(CONFIG_GATE_APP_URL) == 0) {
+        ESP_LOGW(TAG, "app: GATE_APP_URL not configured, returning 503");
         send_text(req, "503 Service Unavailable",
-                  "cocopa redirect not configured (GATE_COCOPA_URL empty)\n");
+                  "app redirect not configured (GATE_APP_URL empty)\n");
         return ESP_OK;
     }
 
-    // Strip /cocopa prefix from req->uri, append rest to CONFIG_GATE_COCOPA_URL.
-    // Ej: req->uri = "/cocopa" → rest = "/" → "https://server.tailXXXX.ts.net/"
-    //     req->uri = "/cocopa/admin/qr" → rest = "/admin/qr" → "https://.../admin/qr"
+    // Strip /app prefix from req->uri, append rest to CONFIG_GATE_APP_URL.
+    // Ej: req->uri = "/app" → rest = "/" → "https://server.tailXXXX.ts.net/"
+    //     req->uri = "/app/admin/qr" → rest = "/admin/qr" → "https://.../admin/qr"
     const char *uri = req->uri;
-    const char *rest = (strncmp(uri, "/cocopa", 7) == 0) ? uri + 7 : uri;
-    size_t base_len = strlen(CONFIG_GATE_COCOPA_URL);
-    bool base_has_slash = (base_len > 0 && CONFIG_GATE_COCOPA_URL[base_len - 1] == '/');
+    const char *rest = (strncmp(uri, "/app", 7) == 0) ? uri + 7 : uri;
+    size_t base_len = strlen(CONFIG_GATE_APP_URL);
+    bool base_has_slash = (base_len > 0 && CONFIG_GATE_APP_URL[base_len - 1] == '/');
     if (*rest == '/' && base_has_slash) {
         rest++;
     } else if (*rest == '\0' && !base_has_slash) {
@@ -488,30 +488,30 @@ static esp_err_t handle_cocopa(httpd_req_t *req) {
     }
 
     char loc[600];
-    snprintf(loc, sizeof(loc), "%s%s", CONFIG_GATE_COCOPA_URL, rest);
+    snprintf(loc, sizeof(loc), "%s%s", CONFIG_GATE_APP_URL, rest);
 
-    // Auto-WOL: si cocopa01 no está confirmado como ON y respondiendo TCP, enviar ráfaga WOL y mostrar splash
-    cocopa01_state_t st = state_get();
-    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    // Auto-WOL: si server no está confirmado como ON y respondiendo TCP, enviar ráfaga WOL y mostrar splash
+    server_state_t st = state_get();
+    bool tcp_up = server_verified_alive(st, state_last_poll_tcp_alive());
     if (!tcp_up) {
-        ESP_LOGI(TAG, "cocopa: server down or not verified ON (st=%s), "
+        ESP_LOGI(TAG, "app: server down or not verified ON (st=%s), "
                       "pidiendo despertar al supervisor",
-                 cocopa01_state_str(st));
-        wake_request("cocopa");
-        return send_wake_splash(req, loc, "Despertando CocopaSystem...");
+                 server_state_str(st));
+        wake_request("app");
+        return send_wake_splash(req, loc, "Despertando the web app...");
     }
 
-    ESP_LOGI(TAG, "cocopa: alive, redirect -> %s", loc);
+    ESP_LOGI(TAG, "app: alive, redirect -> %s", loc);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", loc);
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
-// ─── /app: path-based redirect to cocopa01 Funnel (with WOL) ──────────
+// ─── /kiosk: path-based redirect to server Funnel (with WOL) ──────────
 
 static esp_err_t handle_kiubart(httpd_req_t *req) {
-    ESP_LOGI(TAG, "GET /app");
+    ESP_LOGI(TAG, "GET /kiosk");
     automation_kick();
 
 #ifndef CONFIG_GATE_KIUBART_URL
@@ -525,11 +525,11 @@ static esp_err_t handle_kiubart(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    // Strip /app prefix from req->uri, append rest to CONFIG_GATE_KIUBART_URL.
-    // Ej: req->uri = "/app" → rest = "" → "https://server.tailXXXX.ts.net/app"
-    //     req->uri = "/app/admin" → rest = "/admin" → "https://.../app/admin"
+    // Strip /kiosk prefix from req->uri, append rest to CONFIG_GATE_KIUBART_URL.
+    // Ej: req->uri = "/kiosk" → rest = "" → "https://server.tailXXXX.ts.net/app"
+    //     req->uri = "/kiosk/admin" → rest = "/admin" → "https://.../kiosk/admin"
     const char *uri = req->uri;
-    const char *rest = (strncmp(uri, "/app", 8) == 0) ? uri + 8 : uri;
+    const char *rest = (strncmp(uri, "/kiosk", 8) == 0) ? uri + 8 : uri;
     size_t base_len = strlen(CONFIG_GATE_KIUBART_URL);
     bool base_has_slash = (base_len > 0 && CONFIG_GATE_KIUBART_URL[base_len - 1] == '/');
     if (*rest == '/' && base_has_slash) {
@@ -539,13 +539,13 @@ static esp_err_t handle_kiubart(httpd_req_t *req) {
     char loc[600];
     snprintf(loc, sizeof(loc), "%s%s", CONFIG_GATE_KIUBART_URL, rest);
 
-    // Auto-WOL para cocopa01: Kiubart corre en cocopa01
-    cocopa01_state_t st = state_get();
-    bool tcp_up = cocopa01_verified_alive(st, state_last_poll_tcp_alive());
+    // Auto-WOL para server: Kiubart corre en server
+    server_state_t st = state_get();
+    bool tcp_up = server_verified_alive(st, state_last_poll_tcp_alive());
     if (!tcp_up) {
         ESP_LOGI(TAG, "kiubart: server down or not verified ON (st=%s), "
                       "pidiendo despertar al supervisor",
-                 cocopa01_state_str(st));
+                 server_state_str(st));
         wake_request("kiubart");
         return send_wake_splash(req, loc, "Despertando Kiubart...");
     }
@@ -625,7 +625,7 @@ static esp_err_t handle_autoset(httpd_req_t *req) {
         cJSON_AddNumberToObject(root, "off_after_min", cfg.off_after_min);
         cJSON_AddNumberToObject(root, "quiet_start_min", cfg.quiet_start_min);
         cJSON_AddNumberToObject(root, "quiet_end_min", cfg.quiet_end_min);
-        cJSON_AddStringToObject(root, "state", cocopa01_state_str(state_get()));
+        cJSON_AddStringToObject(root, "state", server_state_str(state_get()));
         cJSON_AddNumberToObject(root, "kick_ok", 1);
         char *body = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
@@ -737,8 +737,8 @@ static void diag_cert_summary(char *out, size_t out_size) {
 
 
 static esp_err_t handle_ready(httpd_req_t *req) {
-    cocopa01_state_t st = state_get();
-    bool ready = cocopa01_ready_cached();
+    server_state_t st = state_get();
+    bool ready = server_ready_cached();
 
     wake_status_t ws;
     wake_get_status(&ws);
@@ -747,7 +747,7 @@ static esp_err_t handle_ready(httpd_req_t *req) {
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ready", ready);
-    cJSON_AddStringToObject(root, "state", cocopa01_state_str(st));
+    cJSON_AddStringToObject(root, "state", server_state_str(st));
     cJSON_AddBoolToObject(root, "wake_pending", ws.pending);
     cJSON_AddNumberToObject(root, "wake_attempts", ws.attempts);
     cJSON_AddNumberToObject(root, "wake_elapsed_ms", ws.elapsed_ms);
@@ -795,7 +795,7 @@ static esp_err_t handle_notify_ready(httpd_req_t *req) {
         return ESP_OK;
     }
     const char *peer = gate_peer_ip(req);
-    ESP_LOGI(TAG, "/notify/ready desde %s: cocopa01 declara su stack listo",
+    ESP_LOGI(TAG, "/notify/ready desde %s: server declara su stack listo",
              peer ? peer : "?");
     ready_notify_ready();
     send_text(req, "200 OK", "ready: latch encendido. El portal redirige al instante.\n");
@@ -818,7 +818,7 @@ static esp_err_t handle_notify_unready(httpd_req_t *req) {
         return ESP_OK;
     }
     const char *peer = gate_peer_ip(req);
-    ESP_LOGW(TAG, "/notify/unready desde %s: cocopa01 declara que su ruta publica no sirve",
+    ESP_LOGW(TAG, "/notify/unready desde %s: server declara que su ruta publica no sirve",
              peer ? peer : "?");
     ready_notify_unready();
     send_text(req, "200 OK", "ready: latch apagado y gate cerrado. El portal vuelve a esperar.\n");
@@ -830,7 +830,7 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     ESP_LOGI(TAG, "GET /diag");
     automation_kick();
 
-    cocopa01_state_t st = state_get();
+    server_state_t st = state_get();
     const char *peer_ip = gate_peer_ip(req);
 
     cJSON *root = cJSON_CreateObject();
@@ -838,22 +838,22 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     // Firmware
     cJSON_AddStringToObject(root, "firmware", FIRMWARE_VERSION);
 
-    // cocopa01 state
-    cJSON_AddStringToObject(root, "cocopa01_state", cocopa01_state_str(st));
-    cJSON_AddStringToObject(root, "cocopa01_ip", CONFIG_COCOPA01_IP);
-    cJSON_AddStringToObject(root, "cocopa01_ts_ip", CONFIG_COCOPA01_TS_IP);
+    // server state
+    cJSON_AddStringToObject(root, "server_state", server_state_str(st));
+    cJSON_AddStringToObject(root, "server_ip", CONFIG_SERVER_IP);
+    cJSON_AddStringToObject(root, "server_ts_ip", CONFIG_SERVER_TS_IP);
     // Si state != ON y no hay fast-poll activo, usar el resultado cacheado del poll
     // para no bloquear la tarea monohilo httpd con timeouts TCP.
-    bool tcp_alive = (st == COCOPA01_STATE_ON || state_is_fast_polling()) ? cocopa01_tcp_alive(250) : state_last_poll_tcp_alive();
-    bool web_alive = (st == COCOPA01_STATE_ON || tcp_alive) ? cocopa01_web_alive(250) : false;
-    cJSON_AddBoolToObject(root, "cocopa01_tcp_alive", tcp_alive);
-    cJSON_AddBoolToObject(root, "cocopa01_web_alive", web_alive);
-    bool stack_ok = state_stack_settled(COCOPA01_STACK_SETTLE_MS);
-    bool server_up = web_alive || (st == COCOPA01_STATE_ON && tcp_alive);
+    bool tcp_alive = (st == SERVER_STATE_ON || state_is_fast_polling()) ? server_tcp_alive(250) : state_last_poll_tcp_alive();
+    bool web_alive = (st == SERVER_STATE_ON || tcp_alive) ? server_web_alive(250) : false;
+    cJSON_AddBoolToObject(root, "server_tcp_alive", tcp_alive);
+    cJSON_AddBoolToObject(root, "server_web_alive", web_alive);
+    bool stack_ok = state_stack_settled(SERVER_STACK_SETTLE_MS);
+    bool server_up = web_alive || (st == SERVER_STATE_ON && tcp_alive);
     // ready = el servidor responde Y su stack publicable (nginx + Funnel)
     // puede recibir ya al cliente. Sin el gate de stack, el hueco medido de
     // ~20 s tras un arranque en frio devolvia 502 al cliente.
-    cJSON_AddBoolToObject(root, "cocopa01_ready", server_up && cocopa01_target_ready());
+    cJSON_AddBoolToObject(root, "server_ready", server_up && server_target_ready());
     cJSON_AddStringToObject(root, "ready_source", s_ready_source);
 
     // Sonda de readiness (ready_probe.c): con que respuesta real se cerro el
@@ -873,17 +873,17 @@ static esp_err_t handle_diag(httpd_req_t *req) {
         cJSON_AddNumberToObject(root, "ready_last_api_status", rs.last_api_status);
         cJSON_AddStringToObject(root, "ready_status", ready_status_text());
     }
-    cJSON_AddBoolToObject(root, "cocopa01_stack_ok", stack_ok);
-    cJSON_AddBoolToObject(root, "cocopa01_boot_verified", state_boot_verified_live());
+    cJSON_AddBoolToObject(root, "server_stack_ok", stack_ok);
+    cJSON_AddBoolToObject(root, "server_boot_verified", state_boot_verified_live());
     {
         uint32_t s_att = 0, s_ok = 0, s_err = 0; int32_t s_len = -1;
         state_http_stats(&s_att, &s_ok, &s_err, &s_len);
-        cJSON_AddNumberToObject(root, "cocopa01_state_http_attempts", s_att);
-        cJSON_AddNumberToObject(root, "cocopa01_state_http_ok", s_ok);
-        cJSON_AddNumberToObject(root, "cocopa01_state_http_err", s_err);
-        cJSON_AddNumberToObject(root, "cocopa01_state_http_last_len", s_len);
+        cJSON_AddNumberToObject(root, "server_state_http_attempts", s_att);
+        cJSON_AddNumberToObject(root, "server_state_http_ok", s_ok);
+        cJSON_AddNumberToObject(root, "server_state_http_err", s_err);
+        cJSON_AddNumberToObject(root, "server_state_http_last_len", s_len);
     }
-    cJSON_AddNumberToObject(root, "cocopa01_uptime_s", state_cocopa01_uptime_s());
+    cJSON_AddNumberToObject(root, "server_uptime_s", state_server_uptime_s());
 
     // Supervisor de Auto-WOL (wake.c). Antes el WOL era un disparo unico sin
     // ninguna traza: cuando la rafaga se perdia no habia forma de saber si el
@@ -979,8 +979,8 @@ static const httpd_uri_t s_uris_public[] = {
     { .uri = "/test_tg", .method = HTTP_GET, .handler = handle_test_tg},
     { .uri = "/gate",     .method = HTTP_GET, .handler = handle_gate    },
     { .uri = "/monitor*", .method = HTTP_GET, .handler = handle_monitor },
-    { .uri = "/cocopa*",  .method = HTTP_GET, .handler = handle_cocopa  },
-    { .uri = "/app*", .method = HTTP_GET, .handler = handle_kiubart },
+    { .uri = "/app*",  .method = HTTP_GET, .handler = handle_app  },
+    { .uri = "/kiosk*", .method = HTTP_GET, .handler = handle_kiubart },
       { .uri = "/ready",   .method = HTTP_GET, .handler = handle_ready  },
       { .uri = "/diag",    .method = HTTP_GET, .handler = handle_diag   },
     { .uri = "/portmap", .method = HTTP_GET, .handler = handle_portmap},

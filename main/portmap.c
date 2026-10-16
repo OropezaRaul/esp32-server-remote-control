@@ -23,7 +23,7 @@ static const portmap_entry_t DEFAULTS[] = {
         .upstream_host = "",
         .upstream_port = 8080,
         .proto         = "http",
-        .label         = "cocopa",
+        .label         = "app",
     },
 };
 #define DEFAULTS_COUNT (sizeof(DEFAULTS) / sizeof(DEFAULTS[0]))

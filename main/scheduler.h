@@ -11,10 +11,10 @@
 // automation.c): dispara a horas fijas todos los días sin importar la
 // actividad ni el estado previo. Decisión de diseño del usuario (STATUS.md
 // bug #4): el schedule es SIEMPRE la fuente de verdad, no hay manual
-// override — si cocopa01 se apagó a mano a las 23:30, el wake de las 8:00
+// override — si server se apagó a mano a las 23:30, el wake de las 8:00
 // dispara igual.
 //
-//   wake HH:MM -> envía magic packet WOL a cocopa01 (si ya está ON, skip)
+//   wake HH:MM -> envía magic packet WOL a server (si ya está ON, skip)
 //   off  HH:MM -> POST /off; si está en S3 hace el baile WOL -> S0 -> S5,
 //                 igual que el /off manual
 //

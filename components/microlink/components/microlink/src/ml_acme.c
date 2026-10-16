@@ -1,27 +1,27 @@
-/*
- * ml_acme.c — Cliente ACME v2 (RFC 8555) mínimo contra Let's Encrypt.
- *
- * Implementa el flujo completo DNS-01 para un único hostname:
- *   directory → newAccount → newOrder → authz → challenge → poll authz →
- *   finalize (CSR) → poll order → download cert → ml_cert_store().
- *
- * Criptografía:
- *   - JWS (RFC 7515) sobre ES256. La account key es EC P-256 persistida en NVS
- *     como blob de 32 bytes (scalar d big-endian). Tras newAccount se guarda
- *     la account URL (kid) y se usa en vez de jwk en requests posteriores.
- *   - CSR generado con mbedtls_x509write_csr_der; SAN (dNSName) construido a
- *     mano en DER y agregado vía mbedtls_x509write_csr_set_extension.
- *
- * HTTP:
- *   esp_http_client nuevo por request. Cert bundle default del IDF para validar
- *   TLS contra Let's Encrypt. Capturamos Replay-Nonce y Location con un
- *   HTTP_EVENT_ON_HEADER handler estático (esp_http_client_get_headers no
- *   existe en IDF 5.x; usamos el singular esp_http_client_get_header cuando
- *   se necesita y un event handler para el nonce).
- *
- * No se debe llamar ml_acme_obtain_cert más de una vez en paralelo; las
- * claves y buffers estáticos no son re-entrantes.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifndef MBEDTLS_ALLOW_PRIVATE_ACCESS
 #define MBEDTLS_ALLOW_PRIVATE_ACCESS
@@ -77,7 +77,7 @@ static const char *TAG = "ml_acme";
 #define ML_ACME_NVS_KID          "kid"
 #define ML_ACME_NVS_DIR_OVERRIDE "dir_url"
 
-#define ML_ACME_RESP_CAP         (32 * 1024)   /* límite duro del body */
+#define ML_ACME_RESP_CAP         (32 * 1024)   
 #define ML_ACME_RESP_INIT        (4 * 1024)
 #define ML_ACME_HTTP_TIMEOUT_MS  15000
 #define ML_ACME_PROPAGATION_MS   15000
@@ -86,10 +86,10 @@ static const char *TAG = "ml_acme";
 #define ML_ACME_POLL_AUTHZ_MS    5000
 #define ML_ACME_POLL_AUTHZ_MAX_MS (120 * 1000)
 #define ML_ACME_PUBLISH_TIMEOUT_MS (120 * 1000)
-#define ML_ACME_HTTP_RETRY_MAX   2             /* 2 reintentos por request */
-#define ML_ACME_KEY_BYTES        32            /* EC P-256 scalar size */
+#define ML_ACME_HTTP_RETRY_MAX   2             
+#define ML_ACME_KEY_BYTES        32            
 
-/* ───────────────────────── Estado estático ─────────────────────────── */
+
 
 static char             s_directory_url[256] = ML_ACME_DIRECTORY_DEFAULT;
 static ml_acme_set_dns_fn   s_set_dns = NULL;
@@ -99,22 +99,22 @@ static mbedtls_pk_context s_acct_pk;
 static mbedtls_pk_context s_leaf_pk;
 static bool              s_keys_loaded = false;
 
-static char             s_kid[256] = {0};      /* account URL (kid) */
+static char             s_kid[256] = {0};      
 static char             s_last_nonce[128] = {0};
 static char             s_last_error[128] = {0};
 
-/* Buffers persistentes para el nonce (no se libera entre requests): son
- * propiedad del módulo y se rellenan vía HTTP_EVENT_ON_HEADER. */
 
-/* ───────────────────────── Forward declarations ────────────────────── */
+
+
+
 
 static int ml_acme_rng(void *ctx, unsigned char *buf, size_t len);
 static void progress(const char *stage, esp_err_t err);
 static void set_error(const char *fmt, ...);
 
-/* ───────────────────────── Utilidades varias ───────────────────────── */
 
-/* Base64 URL-safe sin padding (RFC 7515). */
+
+
 static size_t b64url_encode(const unsigned char *src, size_t src_len,
                             char *dst, size_t dst_cap)
 {
@@ -122,7 +122,7 @@ static size_t b64url_encode(const unsigned char *src, size_t src_len,
     if (mbedtls_base64_encode((unsigned char *)dst, dst_cap, &olen, src, src_len) != 0) {
         return 0;
     }
-    /* Reemplazar +/= por -_ y stripping '=' final. */
+    
     for (size_t i = 0; i < olen; i++) {
         if (dst[i] == '+') dst[i] = '-';
         else if (dst[i] == '/') dst[i] = '_';
@@ -133,7 +133,7 @@ static size_t b64url_encode(const unsigned char *src, size_t src_len,
     return olen;
 }
 
-/* SHA-256 → base64url. Devuelve longitud escrita. */
+
 static int sha256_b64url(const unsigned char *in, size_t in_len, char *out, size_t out_cap)
 {
     unsigned char digest[32];
@@ -144,7 +144,7 @@ static int sha256_b64url(const unsigned char *in, size_t in_len, char *out, size
     return (n > 0) ? (int)n : -1;
 }
 
-/* strdup con malloc. */
+
 static char *xstrdup(const char *s)
 {
     if (!s) return NULL;
@@ -155,7 +155,7 @@ static char *xstrdup(const char *s)
     return p;
 }
 
-/* ───────────────────────── Claves EC P-256 (NVS) ───────────────────── */
+
 
 static esp_err_t load_or_gen_key(const char *blob_key, mbedtls_pk_context *pk)
 {
@@ -228,7 +228,7 @@ static esp_err_t load_or_gen_key(const char *blob_key, mbedtls_pk_context *pk)
             nvs_close(nvs);
             return ESP_FAIL;
         }
-        /* Recalcular la public point Q = d*G (read_key solo carga d). */
+        
         mbedtls_ecp_keypair *kp = mbedtls_pk_ec(*pk);
         rc = mbedtls_ecp_mul(&kp->grp, &kp->Q, &kp->d, &kp->grp.G,
                              ml_acme_rng, NULL);
@@ -244,13 +244,13 @@ static esp_err_t load_or_gen_key(const char *blob_key, mbedtls_pk_context *pk)
     return ESP_OK;
 }
 
-/* ───────────────────────── JWK / Thumbprint ────────────────────────── */
 
-/* Construye {"crv":"P-256","kty":"EC","x":<b64url>,"y":<b64url>} con campos
- * en orden lexicográfico exacto (RFC 7638 §3.2). Devuelve malloc'd string. */
+
+
+
 static char *build_jwk_canonical_json(mbedtls_pk_context *pk)
 {
-    unsigned char pub_xy[65];   /* uncompressed: 0x04 || X(32) || Y(32) */
+    unsigned char pub_xy[65];   
     size_t olen = 0;
     int rc = mbedtls_ecp_point_write_binary(&mbedtls_pk_ec(*pk)->grp,
                                             &mbedtls_pk_ec(*pk)->Q,
@@ -269,7 +269,7 @@ static char *build_jwk_canonical_json(mbedtls_pk_context *pk)
     return out;
 }
 
-/* Devuelve malloc'd b64url string. */
+
 static char *build_jwk_json(mbedtls_pk_context *pk)
 {
     unsigned char pub_xy[65];
@@ -289,22 +289,22 @@ static char *build_jwk_json(mbedtls_pk_context *pk)
     return out;
 }
 
-/* ───────────────────────── DER ECDSA sig parser ──────────────────────
- * Convierte SEQUENCE { INTEGER r, INTEGER s } (DER ASN.1) en raw r||s
- * de 64 bytes (32 cada uno, zero-padded a la izquierda). */
+
+
+
 static int ecdsa_der_to_raw(const unsigned char *der, size_t der_len,
                             unsigned char raw[64])
 {
     if (der == NULL || der_len < 8 || der[0] != 0x30) return -1;
-    const unsigned char *p = der + 2;   /* skip SEQUENCE tag + len */
+    const unsigned char *p = der + 2;   
     size_t rem = der_len - 2;
 
-    /* INTEGER r */
+    
     if (rem < 2 || p[0] != 0x02) return -1;
     p++; rem--;
     size_t r_len = p[0]; p++; rem--;
     if (rem < r_len || r_len == 0) return -1;
-    /* strip leading zero (sign-byte) si está y el siguiente bit7=1 */
+    
     const unsigned char *rp = p;
     size_t r_use = r_len;
     if (r_use > 1 && rp[0] == 0x00 && (rp[1] & 0x80)) {
@@ -315,7 +315,7 @@ static int ecdsa_der_to_raw(const unsigned char *der, size_t der_len,
     memcpy(raw + 32 - r_use, rp, r_use);
     p += r_len; rem -= r_len;
 
-    /* INTEGER s */
+    
     if (rem < 2 || p[0] != 0x02) return -1;
     p++; rem--;
     size_t s_len = p[0]; p++; rem--;
@@ -331,9 +331,9 @@ static int ecdsa_der_to_raw(const unsigned char *der, size_t der_len,
     return 0;
 }
 
-/* ───────────────────────── HTTP event handler ─────────────────────────
- * Captura Replay-Nonce y Location en respuestas (en minúsculas según
- * observación práctica con Let's Encrypt; comparamos case-insensitive). */
+
+
+
 typedef struct {
     char replay_nonce[128];
     char location[512];
@@ -364,13 +364,13 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-/* ───────────────────────── JWS body builder ────────────────────────── */
+
 
 typedef struct {
     char *protected_b64;
     char *payload_b64;
     char *signature_b64;
-    char *json;          /* serializado completo, malloc'd */
+    char *json;          
     size_t json_len;
 } jws_t;
 
@@ -384,13 +384,13 @@ static void jws_free(jws_t *j)
     memset(j, 0, sizeof(*j));
 }
 
-/* Carga el protected header con jwk (no kid). */
+
 static char *build_protected_with_jwk(mbedtls_pk_context *pk, const char *nonce,
                                       const char *url)
 {
     char *jwk = build_jwk_json(pk);
     if (!jwk) return NULL;
-    /* {"alg":"ES256","jwk":<jwk>,"nonce":<n>,"url":<u>} SIN espacios. */
+    
     size_t need = strlen(jwk) + strlen(nonce) + strlen(url) + 64;
     char *out = (char *)malloc(need);
     if (!out) { free(jwk); return NULL; }
@@ -400,7 +400,7 @@ static char *build_protected_with_jwk(mbedtls_pk_context *pk, const char *nonce,
     return out;
 }
 
-/* Carga el protected header con kid (post-newAccount). */
+
 static char *build_protected_with_kid(const char *kid, const char *nonce,
                                       const char *url)
 {
@@ -412,14 +412,14 @@ static char *build_protected_with_kid(const char *kid, const char *nonce,
     return out;
 }
 
-/* payload_b64 puede ser NULL para post-as-get (string vacío ""). */
+
 static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
                            const char *nonce, const char *url,
                            const char *payload_json)
 {
     memset(out, 0, sizeof(*out));
 
-    /* 1) protected header */
+    
     char *protected_raw = (s_kid[0] != '\0')
         ? build_protected_with_kid(s_kid, nonce, url)
         : build_protected_with_jwk(pk, nonce, url);
@@ -428,7 +428,7 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
         return ESP_ERR_NO_MEM;
     }
 
-    /* 2) payload b64url (vacío si payload_json es NULL) */
+    
     const char *payload_for_b64 = payload_json ? payload_json : "";
     size_t pl_len = strlen(payload_for_b64);
     size_t pl_cap = ((pl_len + 2) / 3) * 4 + 4;
@@ -444,7 +444,7 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
         out->payload_b64[0] = '\0';
     }
 
-    /* 3) protected b64url */
+    
     size_t pr_len = strlen(protected_raw);
     size_t pr_cap = ((pr_len + 2) / 3) * 4 + 4;
     out->protected_b64 = (char *)malloc(pr_cap);
@@ -456,13 +456,13 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
     }
     free(protected_raw);
 
-    /* 4) signing input = "<protected_b64>.<payload_b64>" */
+    
     size_t sb_len = strlen(out->protected_b64) + 1 + strlen(out->payload_b64) + 1;
     char *signing_input = (char *)malloc(sb_len);
     if (!signing_input) { jws_free(out); set_error("OOM signing_input"); return ESP_ERR_NO_MEM; }
     snprintf(signing_input, sb_len, "%s.%s", out->protected_b64, out->payload_b64);
 
-    /* 5) SHA-256 + ECDSA sign (DER) */
+    
     unsigned char hash[32];
     if (mbedtls_sha256((const unsigned char *)signing_input, sb_len - 1,
                        hash, 0) != 0) {
@@ -483,7 +483,7 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
         return ESP_FAIL;
     }
 
-    /* 6) DER → raw r||s (64 bytes) */
+    
     unsigned char raw_sig[64];
     if (ecdsa_der_to_raw(der_sig, der_sig_len, raw_sig) != 0) {
         jws_free(out);
@@ -491,7 +491,7 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
         return ESP_FAIL;
     }
 
-    /* 7) signature b64url */
+    
     size_t sig_cap = ((64 + 2) / 3) * 4 + 4;
     out->signature_b64 = (char *)malloc(sig_cap);
     if (!out->signature_b64) { jws_free(out); set_error("OOM signature_b64"); return ESP_ERR_NO_MEM; }
@@ -499,7 +499,7 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
         jws_free(out); set_error("b64url(sig) failed"); return ESP_FAIL;
     }
 
-    /* 8) JSON final: {"protected":"...","payload":"...","signature":"..."} */
+    
     size_t jn = strlen(out->protected_b64) + strlen(out->payload_b64) +
                 strlen(out->signature_b64) + 64;
     out->json = (char *)malloc(jn);
@@ -510,10 +510,10 @@ static esp_err_t jws_build(jws_t *out, mbedtls_pk_context *pk,
     return ESP_OK;
 }
 
-/* ───────────────────────── HTTP request ──────────────────────────────
- * Devuelve ESP_OK si HTTP 2xx. Rellena *body (malloc'd, caller free) y
- * actualiza *cap (nonce, location) y, si new_nonce != NULL, también
- * s_last_nonce. */
+
+
+
+
 static esp_err_t http_post(const char *url, const char *body_json,
                            int *out_status,
                            char **out_body, size_t *out_body_len,
@@ -523,7 +523,7 @@ static esp_err_t http_post(const char *url, const char *body_json,
     *out_body_len = 0;
     *out_status = 0;
 
-    /* Pre-armamos JWS fuera del bucle de retry (la URL/nonce cambian por retry). */
+    
     char *body_dup = body_json ? xstrdup(body_json) : NULL;
     if (body_json && !body_dup) {
         set_error("OOM body_dup");
@@ -532,7 +532,7 @@ static esp_err_t http_post(const char *url, const char *body_json,
 
     esp_err_t last_err = ESP_FAIL;
     for (int attempt = 0; attempt <= ML_ACME_HTTP_RETRY_MAX; attempt++) {
-        /* Nuevo nonce si no tenemos uno (solo en primer intento). */
+        
         const char *nonce = s_last_nonce[0] ? s_last_nonce : "";
         ESP_LOGI(TAG, "JWS attempt %d: nonce_len=%u nonce=%.12s url=%s",
                  attempt, (unsigned)strlen(nonce), nonce, url);
@@ -590,7 +590,7 @@ static esp_err_t http_post(const char *url, const char *body_json,
         int status = esp_http_client_get_status_code(h);
         *out_status = status;
 
-        /* Acumular body. */
+        
         size_t cap_sz = ML_ACME_RESP_INIT, used = 0;
         char *buf = (char *)malloc(cap_sz);
         if (!buf) {
@@ -637,7 +637,7 @@ static esp_err_t http_post(const char *url, const char *body_json,
         esp_http_client_cleanup(h);
         jws_free(&jws);
 
-        /* Guardar nonce nuevo para próximas requests. */
+        
         if (cap->got_nonce && cap->replay_nonce[0]) {
             strncpy(s_last_nonce, cap->replay_nonce, sizeof(s_last_nonce) - 1);
             s_last_nonce[sizeof(s_last_nonce) - 1] = '\0';
@@ -651,13 +651,13 @@ static esp_err_t http_post(const char *url, const char *body_json,
             return ESP_OK;
         }
 
-        /* 4xx "badNonce" → retry. */
+        
         bool bad_nonce = false;
         if (status == 400 || status == 403) {
             if (used > 0) {
                 cJSON *j = cJSON_Parse(buf);
-                /* El problem document ACME va en top-level:
-                 * {"type":"urn:ietf:params:acme:error:badNonce","detail":...} */
+                
+
                 const cJSON *t = j ? cJSON_GetObjectItemCaseSensitive(j, "type") : NULL;
                 if (cJSON_IsString(t) && t->valuestring &&
                     strstr(t->valuestring, "badNonce")) {
@@ -670,13 +670,13 @@ static esp_err_t http_post(const char *url, const char *body_json,
 
         if (bad_nonce && attempt < ML_ACME_HTTP_RETRY_MAX) {
             ESP_LOGW(TAG, "badNonce (status %d), retrying with fresh nonce", status);
-            /* s_last_nonce ya fue actualizado con el Replay-Nonce de esta
-             * respuesta 400 — NO limpiarlo: el retry debe usarlo. */
+            
+
             continue;
         }
 
-        /* Si no fue badNonce o ya no quedan reintentos. Loggear el PROBLEMA
-         * de respuesta (body ACME) no el request. */
+        
+
         ESP_LOGE(TAG, "HTTP %d url=%s used=%u nonce_len=%u", status, url,
                  (unsigned)used, (unsigned)strlen(s_last_nonce));
         if (used > 0) {
@@ -702,7 +702,7 @@ static esp_err_t http_post(const char *url, const char *body_json,
     return last_err;
 }
 
-/* POST-as-GET: payload es string vacío. */
+
 static esp_err_t http_post_as_get(const char *url, int *out_status,
                                   char **out_body, size_t *out_body_len,
                                   http_capture_t *cap)
@@ -710,8 +710,8 @@ static esp_err_t http_post_as_get(const char *url, int *out_status,
     return http_post(url, NULL, out_status, out_body, out_body_len, cap);
 }
 
-/* GET plain (sin JWS). Se usa para el directory y para newNonce.
- * Captura nonce vía el event handler igual que POST. */
+
+
 static esp_err_t http_get(const char *url, int *out_status,
                           char **out_body, size_t *out_body_len,
                           http_capture_t *cap)
@@ -784,15 +784,15 @@ static esp_err_t http_get(const char *url, int *out_status,
     return ESP_OK;
 }
 
-/* ───────────────────────── Directory ──────────────────────────────── */
+
 
 typedef struct {
     char new_nonce[256];
     char new_account[256];
     char new_order[256];
     char revoke[256];
-    /* finalize puede venir en order body, pero algunos servers lo incluyen
-     * aquí también (Let's Encrypt staging lo hace). */
+    
+
     char finalize[256];
 } acme_directory_t;
 
@@ -804,7 +804,7 @@ static esp_err_t fetch_directory(acme_directory_t *d)
     char *body = NULL;
     size_t blen = 0;
     http_capture_t cap = {0};
-    /* El directory endpoint de Let's Encrypt acepta GET plano. */
+    
     esp_err_t err = http_get(s_directory_url, &status, &body, &blen, &cap);
     if (err != ESP_OK) {
         progress("directory", err);
@@ -844,13 +844,13 @@ static esp_err_t fetch_directory(acme_directory_t *d)
     return ESP_OK;
 }
 
-/* ───────────────────────── newAccount ───────────────────────────────── */
+
 
 static esp_err_t do_new_account(const char *new_account_url, const char *hostname)
 {
     progress("newAccount", ESP_OK);
-    /* LE exige un contacto con dominio publico valido. Si no hay email
-     * configurado (ML_ACME_CONTACT_EMAIL vacio), se omite el campo. */
+    
+
     char payload[320];
     const char *contact = CONFIG_ML_ACME_CONTACT_EMAIL;
     if (contact[0] != '\0') {
@@ -876,7 +876,7 @@ static esp_err_t do_new_account(const char *new_account_url, const char *hostnam
         set_error("newAccount HTTP %d", status);
         return ESP_FAIL;
     }
-    /* Account URL: preferir header Location; caer a body.id. */
+    
     if (cap.got_location && cap.location[0]) {
         strncpy(s_kid, cap.location, sizeof(s_kid) - 1);
         s_kid[sizeof(s_kid) - 1] = '\0';
@@ -898,7 +898,7 @@ static esp_err_t do_new_account(const char *new_account_url, const char *hostnam
         return ESP_FAIL;
     }
 
-    /* Persistir kid en NVS (asociado a acct_key). */
+    
     nvs_handle_t nvs;
     if (nvs_open(ML_ACME_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_str(nvs, ML_ACME_NVS_KID, s_kid);
@@ -910,7 +910,7 @@ static esp_err_t do_new_account(const char *new_account_url, const char *hostnam
     return ESP_OK;
 }
 
-/* ───────────────────────── newOrder ────────────────────────────────── */
+
 
 static esp_err_t do_new_order(const char *new_order_url, const char *hostname,
                               char *out_order_url, size_t cap,
@@ -937,7 +937,7 @@ static esp_err_t do_new_order(const char *new_order_url, const char *hostname,
         set_error("newOrder HTTP %d", status);
         return ESP_FAIL;
     }
-    /* Order URL via Location si lo da (LE lo hace en 201). */
+    
     if (cap_c.got_location && cap_c.location[0]) {
         strncpy(out_order_url, cap_c.location, cap - 1);
         out_order_url[cap - 1] = '\0';
@@ -978,7 +978,7 @@ static esp_err_t do_new_order(const char *new_order_url, const char *hostname,
     return ESP_OK;
 }
 
-/* ───────────────────────── Authorizations / Challenge ──────────────── */
+
 
 static esp_err_t do_get_authz(const char *authz_url,
                               char *out_challenge_url, size_t cap_ch,
@@ -1038,7 +1038,7 @@ static esp_err_t do_get_authz(const char *authz_url,
 static esp_err_t do_post_challenge(const char *challenge_url)
 {
     progress("challenge", ESP_OK);
-    /* Payload = "{}" (objeto vacío). */
+    
     int status = 0;
     char *body = NULL;
     size_t blen = 0;
@@ -1049,7 +1049,7 @@ static esp_err_t do_post_challenge(const char *challenge_url)
         return err;
     }
     free(body);
-    /* LE devuelve 200 OK con status="pending". */
+    
     if (status < 200 || status >= 300) {
         progress("challenge", ESP_FAIL);
         set_error("challenge POST HTTP %d", status);
@@ -1075,7 +1075,7 @@ static esp_err_t poll_authz(const char *authz_url)
                                       challenge_token, sizeof(challenge_token),
                                       status, sizeof(status));
         if (err != ESP_OK) {
-            /* Reintentar hasta agotar la ventana; reportar al final. */
+            
             ESP_LOGW(TAG, "poll-authz err=%s (waited=%d)", s_last_error, waited);
             continue;
         }
@@ -1094,50 +1094,50 @@ static esp_err_t poll_authz(const char *authz_url)
     return ESP_FAIL;
 }
 
-/* ───────────────────────── CSR ────────────────────────────────────────
- * Construimos SAN DER a mano:
- *   SubjectAltName ::= SEQUENCE SIZE (1..MAX) OF GeneralName
- *   GeneralName ::= CHOICE { ... [2] dNSName IA5String }
- *   GeneralNames ::= SEQUENCE SIZE (1..MAX) OF GeneralName
- *
- * Por tanto:
- *   SEQUENCE {
- *     [2] IA5String "hostname"
- *   }
- * Codificado:
- *   0x30 <total_len>           (SEQUENCE outer)
- *   0x82 <hi> <lo>             (context specific [2] constructed; long form len)
- *   <strlen>                   (IA5String length)
- *   "hostname"                 (bytes del host)
- *
- * Si hostname > 127 bytes, el long-form len son 2 bytes; si ≤127, short form.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 static esp_err_t build_san_der(const char *hostname, unsigned char *out, size_t *out_len)
 {
     if (!hostname) return ESP_ERR_INVALID_ARG;
     size_t hn = strlen(hostname);
     if (hn == 0 || hn > 127) {
-        /* Para simplicidad soportamos hostnames de hasta 127 bytes; los FQDN
-         * Tailscale reales son <100. Esto cabe en DER short-form length. */
+        
+
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Estructura correcta (SubjectAltName extension value, RFC 5280):
-     *
-     *   SEQUENCE {                 [0x30 L1]
-     *     [2] dNSName PRIMITIVE    [0x82 L2]  <- tag [2] IMPLICIT, sin TLV interno
-     *       <hostname bytes>
-     *     }
-     *
-     * dNSName es context-tag [2] PRIMITIVO: el valor son los bytes IA5 del
-     * hostname DIRECTAMENTE (no se envuelve en un IA5String 0x16).
-     * L2 = hn, L1 = hn + 2. Tamaño total = hn + 4.
-     */
+    
+
+
+
+
+
+
+
+
+
+
     size_t idx = 0;
-    out[idx++] = 0x30;                  /* SEQUENCE */
-    out[idx++] = (unsigned char)(hn + 2); /* L1 */
-    out[idx++] = 0x82;                  /* [2] dNSName, primitive */
-    out[idx++] = (unsigned char)hn;     /* L2 */
+    out[idx++] = 0x30;                  
+    out[idx++] = (unsigned char)(hn + 2); 
+    out[idx++] = 0x82;                  
+    out[idx++] = (unsigned char)hn;     
     memcpy(out + idx, hostname, hn);
     idx += hn;
     *out_len = idx;
@@ -1172,7 +1172,7 @@ static esp_err_t build_csr_der(const char *hostname, unsigned char **out_der,
     if (rc != 0) { set_error("csr set_ext SAN: -0x%x", (unsigned)-rc); goto cleanup; }
     mbedtls_x509write_csr_set_key(&csr, &s_leaf_pk);
 
-    /* Output DER. Necesita buffer suficientemente grande (típico <512B). */
+    
     size_t buf_sz = 1024;
     unsigned char *buf = (unsigned char *)malloc(buf_sz);
     if (!buf) { set_error("OOM csr buf"); goto cleanup; }
@@ -1183,14 +1183,14 @@ static esp_err_t build_csr_der(const char *hostname, unsigned char **out_der,
         set_error("csr_der: -0x%x", (unsigned)-n);
         goto cleanup;
     }
-    /* mbedtls_x509write_csr_der escribe el DER ALINEADO AL FINAL del buffer
-     * (retorna la longitud). El DER real arranca en buf + buf_sz - n. */
+    
+
     *out_der_len = (size_t)n;
     *out_der = (unsigned char *)malloc(*out_der_len);
     if (!*out_der) { free(buf); set_error("OOM csr der copy"); goto cleanup; }
     memcpy(*out_der, buf + buf_sz - n, *out_der_len);
 
-    /* También emitimos PEM por conveniencia (lo pasamos a ml_cert_store). */
+    
     size_t pem_cap = 512;
     char *pem = (char *)malloc(pem_cap);
     if (!pem) { free(buf); set_error("OOM csr pem"); goto cleanup; }
@@ -1211,7 +1211,7 @@ cleanup:
     return ret_ok;
 }
 
-/* ───────────────────────── finalize + poll order + cert ────────────── */
+
 
 static esp_err_t do_finalize(const char *finalize_url, const char *hostname)
 {
@@ -1324,12 +1324,12 @@ static esp_err_t do_download_cert(const char *cert_url,
         set_error("cert HTTP %d", status);
         return ESP_FAIL;
     }
-    *out_fullchain = (uint8_t *)body;   /* transferimos ownership */
+    *out_fullchain = (uint8_t *)body;   
     *out_len = blen;
     return ESP_OK;
 }
 
-/* ───────────────────────── Helpers varios ──────────────────────────── */
+
 
 static void progress(const char *stage, esp_err_t err)
 {
@@ -1344,7 +1344,7 @@ static void set_error(const char *fmt, ...)
     va_end(ap);
 }
 
-/* RNG shim para mbedtls: usa el TRNG del ESP32 (no bloqueante). */
+
 static int ml_acme_rng(void *ctx, unsigned char *buf, size_t len)
 {
     (void)ctx;
@@ -1352,16 +1352,16 @@ static int ml_acme_rng(void *ctx, unsigned char *buf, size_t len)
     return 0;
 }
 
-/* ───────────────────────── API pública ─────────────────────────────── */
+
 
 esp_err_t ml_acme_set_directory(const char *url)
 {
     if (!url) return ESP_ERR_INVALID_ARG;
     nvs_handle_t nvs;
     if (nvs_open(ML_ACME_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-        /* Si el directorio CAMBIA (staging -> produccion), la account kid y
-         * el last_issue previos son de otra CA: invalidarlos para forzar
-         * newAccount + nueva emision. */
+        
+
+
         char prev[256] = {0};
         size_t plen = sizeof(prev);
         bool changed = (nvs_get_str(nvs, ML_ACME_NVS_DIR_OVERRIDE, prev, &plen) == ESP_OK &&
@@ -1410,7 +1410,7 @@ esp_err_t ml_acme_init(void)
     }
     s_keys_loaded = true;
 
-    /* Cargar kid persistido (si ya teníamos cuenta) y override de directorio. */
+    
     nvs_handle_t nvs;
     if (nvs_open(ML_ACME_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
         size_t len = sizeof(s_kid);
@@ -1450,16 +1450,16 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
     char status_buf[32] = {0};
     uint8_t *fullchain = NULL; size_t fclen = 0;
 
-    /* 1) Directory */
+    
     acme_directory_t dir;
     err = fetch_directory(&dir);
     if (err != ESP_OK) goto out;
 
-    /* Asegurar nonce fresco. */
+    
     if (s_last_nonce[0] == '\0') {
         progress("nonce", ESP_OK);
         int st = 0; char *b = NULL; size_t bl = 0; http_capture_t c = {0};
-        /* newNonce: LE acepta GET o HEAD (devuelve 204 con nonce en Replay-Nonce). */
+        
         err = http_get(dir.new_nonce, &st, &b, &bl, &c);
         free(b);
         if (err != ESP_OK || st != 204) {
@@ -1478,7 +1478,7 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         }
     }
 
-    /* 2) newAccount */
+    
     if (s_kid[0] == '\0') {
         err = do_new_account(dir.new_account, hostname);
         if (err != ESP_OK) goto out;
@@ -1486,14 +1486,14 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         ESP_LOGI(TAG, "reusing kid=%s", s_kid);
     }
 
-    /* 3) newOrder */
+    
     err = do_new_order(dir.new_order, hostname,
                        order_url, sizeof(order_url),
                        authz_url, sizeof(authz_url),
                        finalize_url, sizeof(finalize_url));
     if (err != ESP_OK) goto out;
 
-    /* 4) authz → challenge dns-01 */
+    
     progress("authz", ESP_OK);
     err = do_get_authz(authz_url,
                        challenge_url, sizeof(challenge_url),
@@ -1501,7 +1501,7 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
                        status_buf, sizeof(status_buf));
     if (err != ESP_OK) { progress("authz", ESP_FAIL); goto out; }
 
-    /* 5) JWK thumbprint para keyauth */
+    
     char *thumbprint = NULL;
     {
         char *canon = build_jwk_canonical_json(&s_acct_pk);
@@ -1515,14 +1515,14 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         if (!thumbprint) { set_error("OOM thumbprint"); err = ESP_ERR_NO_MEM; goto out; }
     }
 
-    /* keyauthz = token "." thumbprint */
+    
     size_t klen = strlen(challenge_token) + 1 + strlen(thumbprint) + 1;
     char *keyauthz = (char *)malloc(klen);
     if (!keyauthz) { free(thumbprint); set_error("OOM keyauthz"); err = ESP_ERR_NO_MEM; goto out; }
     snprintf(keyauthz, klen, "%s.%s", challenge_token, thumbprint);
     free(thumbprint);
 
-    /* txt = b64url(sha256(keyauthz)) SIN padding. */
+    
     char txt[64];
     if (sha256_b64url((const unsigned char *)keyauthz, strlen(keyauthz),
                       txt, sizeof(txt)) < 0) {
@@ -1532,7 +1532,7 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
     if (!name_buf) { free(keyauthz); set_error("OOM name_buf"); err = ESP_ERR_NO_MEM; goto out; }
     snprintf(name_buf, strlen(hostname) + 32, "_acme-challenge.%s", hostname);
 
-    /* 6) Publicar TXT */
+    
     progress("set-dns", ESP_OK);
     esp_err_t pub_err = s_set_dns(name_buf, txt, ML_ACME_PUBLISH_TIMEOUT_MS);
     free(name_buf);
@@ -1544,31 +1544,31 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         goto out;
     }
 
-    /* 7) Esperar propagación. */
+    
     vTaskDelay(pdMS_TO_TICKS(ML_ACME_PROPAGATION_MS));
 
-    /* 8) POST challenge */
+    
     err = do_post_challenge(challenge_url);
     free(keyauthz);
     if (err != ESP_OK) goto out;
 
-    /* 9) Poll authz */
+    
     err = poll_authz(authz_url);
     if (err != ESP_OK) goto out;
 
-    /* 10) finalize */
+    
     err = do_finalize(finalize_url, hostname);
     if (err != ESP_OK) goto out;
 
-    /* 11) Poll order */
+    
     err = poll_order(order_url, cert_url, sizeof(cert_url));
     if (err != ESP_OK) goto out;
 
-    /* 12) Download cert */
+    
     err = do_download_cert(cert_url, &fullchain, &fclen);
     if (err != ESP_OK) goto out;
 
-    /* 13) Persistir. Generamos PEM de la leaf key y llamamos ml_cert_store. */
+    
     {
         size_t pem_cap = 512;
         unsigned char *leaf_pem = (unsigned char *)malloc(pem_cap);
@@ -1585,13 +1585,13 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
             err = ESP_FAIL;
             goto out;
         }
-        /* pk_write_key_pem retorna 0 en exito; la longitud es strlen (PEM
-         * null-terminated). Pasar 0 invalidaba ml_cert_store. */
+        
+
         size_t key_pem_len = strlen((char *)leaf_pem);
         ESP_LOGI(TAG, "storing cert: fullchain=%u bytes, key=%u bytes",
                  (unsigned)fclen, (unsigned)key_pem_len);
         {
-            /* DEBUG: hexdump de los últimos 40 bytes y scan de nulls internos */
+            
             unsigned char *fc = fullchain;
             ESP_LOGI(TAG, "fc tail hex: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
                      fc[fclen-16],fc[fclen-15],fc[fclen-14],fc[fclen-13],
@@ -1609,7 +1609,7 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         }
         progress("store", ESP_OK);
         err = ml_cert_store(fullchain, fclen, leaf_pem, key_pem_len);
-        /* Limpiar material sensible de la copia local. */
+        
         memset(leaf_pem, 0, pem_cap);
         free(leaf_pem);
         if (err != ESP_OK) {
@@ -1619,11 +1619,11 @@ esp_err_t ml_acme_obtain_cert(const char *hostname)
         }
     }
 
-    /* Borrar fullchain (ya está en NVS via ml_cert_store). */
+    
     free(fullchain);
     fullchain = NULL;
 
-    /* 14) Marcar last_issue. */
+    
     int64_t now = (int64_t)time(NULL);
     nvs_handle_t nvs;
     if (nvs_open(ML_ACME_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {

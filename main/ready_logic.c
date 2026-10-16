@@ -50,7 +50,7 @@ void ready_logic_record(ready_logic_t *l, uint32_t now_ms, bool ok,
         // sonda al backend por la LAN da falsos negativos y el latch se caia y
         // voltaba a encenderse, costandonos viajes extra del cliente.
         //
-        // Quien declara que cocopa01 se fue es el poll de estado (state.c), que lo
+        // Quien declara que server se fue es el poll de estado (state.c), que lo
         // verifica por otra via (:22 + /state) y hace que ready_probe.c invalide el
         // latch en <=2.5 s con el portal esperando. El TTL de 60 s queda de red de
         // seguridad para el caso zombie (poll dice ON pero nada responde).
@@ -59,7 +59,7 @@ void ready_logic_record(ready_logic_t *l, uint32_t now_ms, bool ok,
 }
 
 bool ready_logic_is_ready(const ready_logic_t *l, uint32_t now_ms, uint32_t ttl_ms) {
-    // cocopa01 declaro rota su ruta publica: su palabra vale mas que nuestra sonda,
+    // server declaro rota su ruta publica: su palabra vale mas que nuestra sonda,
     // que ve el backend por la LAN y no puede saber si el tunel responde.
     if (l != NULL && l->public_broken) return false;
     if (l == NULL || !l->latched) return false;

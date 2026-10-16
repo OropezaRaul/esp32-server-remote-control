@@ -1,9 +1,9 @@
-/**
- * @file lwip_compat.h
- * @brief Compatibility layer for lwIP API changes between versions
- *
- * ESP-IDF v5.3+ uses lwIP 2.2.0 which changed ip_addr_t structure
- */
+
+
+
+
+
+
 
 #ifndef LWIP_COMPAT_H
 #define LWIP_COMPAT_H

@@ -13,7 +13,7 @@
 #include <ctype.h>
 
 #include "state.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "telegram.h"
 #include "wol.h"
 #include "system_health.h"
@@ -60,7 +60,7 @@ static volatile uint32_t   g_last_interaction_ms = 0;
 static volatile bool       g_initialized         = false;
 static volatile bool       g_last_in_quiet       = false;
 
-// Backoff state: cuando el intento de auto-off falla (cocopa01 no wake-up
+// Backoff state: cuando el intento de auto-off falla (server no wake-up
 // desde S3, o /off no llega), NO seguimos reintentando cada 30s. Aplicamos
 // backoff exponencial para no spammear y notificar al usuario.
 static volatile uint32_t   g_off_last_failure_ms = 0;
@@ -270,7 +270,7 @@ void automation_kick(void) {
         cycle_clear();
     }
 
-    // Persistir el kick tambien permite sobrevivir reboots: si cocopa01
+    // Persistir el kick tambien permite sobrevivir reboots: si server
     // sigue ON tras un reboot del ESP32, no queremos suspend inmediato
     // porque el usuario estuvo activo hace 1 minuto.
     //
@@ -357,7 +357,7 @@ void automation_status_str(char *out, size_t out_size) {
                      ? (now_ms - g_last_interaction_ms) : 0;
     uint32_t idle_min = idle_ms / 60000UL;
 
-    cocopa01_state_t st = state_get();
+    server_state_t st = state_get();
 
     int p = snprintf(out, out_size,
         "Automation: %s\n"
@@ -370,15 +370,15 @@ void automation_status_str(char *out, size_t out_size) {
         (unsigned)g_cfg.suspend_after_min,
         (unsigned)g_cfg.off_after_min,
         qs, qe,
-        cocopa01_state_str(st),
+        server_state_str(st),
         (unsigned)idle_min);
 
-    if (g_cfg.enabled && st == COCOPA01_STATE_ON && g_cfg.suspend_after_min > 0) {
+    if (g_cfg.enabled && st == SERVER_STATE_ON && g_cfg.suspend_after_min > 0) {
         uint32_t left = (idle_min < g_cfg.suspend_after_min)
                       ? (g_cfg.suspend_after_min - idle_min) : 0;
         p += snprintf(out + p, out_size - p,
             "\n  next action: suspend in %u min", (unsigned)left);
-    } else if (g_cfg.enabled && st == COCOPA01_STATE_SUSPEND && g_cfg.off_after_min > 0) {
+    } else if (g_cfg.enabled && st == SERVER_STATE_SUSPEND && g_cfg.off_after_min > 0) {
         uint32_t left = (idle_min < g_cfg.off_after_min)
                       ? (g_cfg.off_after_min - idle_min) : 0;
         int now_min_local = -1;
@@ -425,7 +425,7 @@ static void automation_task(void *arg) {
 
         if (!g_cfg.enabled) continue;
 
-        cocopa01_state_t st = state_get();
+        server_state_t st = state_get();
 
         // Si el poll degradó SUSPEND -> OFF (5 min sin respuesta del S3) pero
         // nuestro ciclo de auto-off sigue activo, NO abandonar: seguimos en el
@@ -433,11 +433,11 @@ static void automation_task(void *arg) {
         // sigue en S3. Antes moría aquí y el /off nunca se enviaba.
         bool in_off_cycle = g_off_cycle_active;
 
-        if (st == COCOPA01_STATE_OFF && in_off_cycle) {
+        if (st == SERVER_STATE_OFF && in_off_cycle) {
             ESP_LOGD(TAG, "state=OFF but off-cycle active (poll degraded SUSPEND->OFF), continuing off branch");
         }
 
-        if (st != COCOPA01_STATE_ON && st != COCOPA01_STATE_SUSPEND && !in_off_cycle) {
+        if (st != SERVER_STATE_ON && st != SERVER_STATE_SUSPEND && !in_off_cycle) {
             // OFF real sin ciclo o UNKNOWN: nada que temporizar.
             continue;
         }
@@ -446,33 +446,33 @@ static void automation_task(void *arg) {
         uint32_t idle_ms = now_ms - g_last_interaction_ms;
         uint32_t idle_min = idle_ms / 60000UL;
 
-        if (st == COCOPA01_STATE_ON) {
+        if (st == SERVER_STATE_ON) {
             // El server está ON: si veníamos de un ciclo de off (p.ej. WOL
             // del brazo de off lo despertó, o alguien lo encendió), el ciclo
             // ya no aplica salvo que sea el nuestro. El brazo de off maneja
             // su propio WOL dentro de la misma iteración; al volver aquí con
             // ON y ciclo activo, lo cancelamos (fue despertado).
             if (in_off_cycle) {
-                ESP_LOGI(TAG, "off-cycle cancelled: cocopa01 is ON");
+                ESP_LOGI(TAG, "off-cycle cancelled: server is ON");
                 cycle_clear();
             }
             if (g_cfg.suspend_after_min == 0) continue;
             if (idle_min < g_cfg.suspend_after_min) continue;
 
             ESP_LOGI(TAG,
-                "ACTION: idle %u min >= %u min threshold. POST /suspend to cocopa01:%d",
+                "ACTION: idle %u min >= %u min threshold. POST /suspend to server:%d",
                 (unsigned)idle_min, (unsigned)g_cfg.suspend_after_min,
-                CONFIG_COCOPA01_HTTP_PORT);
+                CONFIG_SERVER_HTTP_PORT);
             char msg[160];
             snprintf(msg, sizeof(msg),
-                "Automation: cocopa01 idle %u min. Sending /suspend.",
+                "Automation: server idle %u min. Sending /suspend.",
                 (unsigned)idle_min);
             notify_authorized(msg);
 
-            esp_err_t sres = cocopa01_send_suspend();
+            esp_err_t sres = server_send_suspend();
             if (sres == ESP_OK) {
                 ESP_LOGI(TAG, "ACTION: /suspend OK, state -> SUSPEND, off-timer reset");
-                state_set(COCOPA01_STATE_SUSPEND);
+                state_set(SERVER_STATE_SUSPEND);
                 g_last_interaction_ms = now_ms;  // arranca el segundo timer
                 g_last_in_quiet = false;
                 // Activar ciclo interno de auto-off: inmune a la degradacion
@@ -488,12 +488,12 @@ static void automation_task(void *arg) {
                          esp_err_to_name(sres));
             }
         } else {
-            // COCOPA01_STATE_SUSPEND (o OFF con ciclo activo tras degradacion)
-            if (!in_off_cycle && st == COCOPA01_STATE_OFF) continue;  // OFF real
+            // SERVER_STATE_SUSPEND (o OFF con ciclo activo tras degradacion)
+            if (!in_off_cycle && st == SERVER_STATE_OFF) continue;  // OFF real
 
             // Estado SUSPEND observado sin ciclo propio (p.ej. /suspend manual
             // por Telegram): adoptarlo como ciclo de auto-off.
-            if (!in_off_cycle && st == COCOPA01_STATE_SUSPEND && g_cfg.off_after_min > 0) {
+            if (!in_off_cycle && st == SERVER_STATE_SUSPEND && g_cfg.off_after_min > 0) {
                 ESP_LOGI(TAG, "adopting observed SUSPEND as off-cycle");
                 g_off_cycle_active = true;
                 g_off_deadline_unix = (uint32_t)time(NULL)
@@ -552,14 +552,14 @@ static void automation_task(void *arg) {
                 (unsigned)idle_min, (unsigned)g_cfg.off_after_min);
             char msg[200];
             snprintf(msg, sizeof(msg),
-                "Automation: cocopa01 suspended for %u min (outside quiet hours). Waking + /off.",
+                "Automation: server suspended for %u min (outside quiet hours). Waking + /off.",
                 (unsigned)idle_min);
             notify_authorized(msg);
 
-            // cocopa01 in S3 has NIC down, so /off can't reach it.
+            // server in S3 has NIC down, so /off can't reach it.
             // ACPI doesn't allow S3->S5 directly; we have to go S3 -> S0 (WOL)
             // -> S5 (/off). Same dance as the manual /off handler.
-            ESP_LOGI(TAG, "ACTION: WOL to wake cocopa01 from S3 before /off");
+            ESP_LOGI(TAG, "ACTION: WOL to wake server from S3 before /off");
             esp_err_t wres = wol_send_default();
             if (wres != ESP_OK) {
                 g_off_last_failure_ms = now_ms;
@@ -576,12 +576,12 @@ static void automation_task(void *arg) {
                 continue;
             }
             state_mark_known_on();
-            // Wait for cocopa01 to come back. S3 resume is fast (~5-10s),
+            // Wait for server to come back. S3 resume is fast (~5-10s),
             // but BIOS + userspace can take up to 60s.
             bool came_up = false;
             for (int i = 0; i < 30; i++) {
                 vTaskDelay(pdMS_TO_TICKS(2000));
-                if (cocopa01_tcp_alive(2000)) {
+                if (server_tcp_alive(2000)) {
                     came_up = true;
                     break;
                 }
@@ -595,27 +595,27 @@ static void automation_task(void *arg) {
                 }
                 if (backoff_s > (uint32_t)OFF_BACKOFF_MAX_S) backoff_s = OFF_BACKOFF_MAX_S;
                 ESP_LOGW(TAG,
-                    "ACTION: WOL sent but cocopa01 didn't come back in 60s "
+                    "ACTION: WOL sent but server didn't come back in 60s "
                     "(attempt %u). Backoff %u s.",
                     (unsigned)g_off_failure_count, (unsigned)backoff_s);
                 char em[200];
                 snprintf(em, sizeof(em),
-                    "Automation: cocopa01 didn't wake from S3 after WOL (attempt %u). "
+                    "Automation: server didn't wake from S3 after WOL (attempt %u). "
                     "Retrying in %u min. Check BIOS WOL if persistent.",
                     (unsigned)g_off_failure_count,
                     (unsigned)(backoff_s / 60));
                 notify_authorized(em);
                 continue;
             }
-            ESP_LOGI(TAG, "ACTION: cocopa01 back in S0, sending /off");
+            ESP_LOGI(TAG, "ACTION: server back in S0, sending /off");
 
-            esp_err_t ores = cocopa01_send_off();
+            esp_err_t ores = server_send_off();
             if (ores == ESP_OK) {
                 ESP_LOGI(TAG, "ACTION: /off OK, state -> OFF, backoff counter cleared");
                 g_off_last_failure_ms = 0;
                 g_off_failure_count  = 0;
                 cycle_clear();
-                state_set(COCOPA01_STATE_OFF);
+                state_set(SERVER_STATE_OFF);
             } else {
                 g_off_last_failure_ms = now_ms;
                 g_off_failure_count++;
@@ -623,7 +623,7 @@ static void automation_task(void *arg) {
                          esp_err_to_name(ores), (unsigned)g_off_failure_count);
                 char em[160];
                 snprintf(em, sizeof(em),
-                    "Automation: /off failed after waking cocopa01 (%s). Retrying in %u min.",
+                    "Automation: /off failed after waking server (%s). Retrying in %u min.",
                     esp_err_to_name(ores),
                     (unsigned)(OFF_BACKOFF_BASE_S / 60));
                 notify_authorized(em);

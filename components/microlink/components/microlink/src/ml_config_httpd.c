@@ -1,13 +1,13 @@
-/**
- * @file ml_config_httpd.c
- * @brief MicroLink HTTP Config Server
- *
- * Runtime configuration via web UI served on the Tailscale VPN IP.
- * Settings persist in NVS namespace "ml_config".
- * Peer allowlist controls DISCO probe filtering in wg_mgr.
- *
- * Gated by CONFIG_ML_ENABLE_CONFIG_HTTPD.
- */
+
+
+
+
+
+
+
+
+
+
 
 #include "sdkconfig.h"
 
@@ -35,63 +35,63 @@
 
 static const char *TAG = "ml_config";
 
-/* Embedded HTML page */
+
 #include "ml_config_html.h"
 
-/* NVS namespace and keys */
+
 #define NVS_NAMESPACE    "ml_config"
 #define NVS_KEY_SETTINGS "settings"
 #define NVS_KEY_PEERS    "peers"
 #define NVS_KEY_WIFI     "wifi_list"
 
-/* ============================================================================
- * Context Structure
- * ========================================================================== */
+
+
+
 
 struct ml_config_ctx {
-    /* NVS handle */
+    
     nvs_handle_t nvs;
 
-    /* Settings (loaded at init, updated via HTTP) */
+    
     ml_config_settings_t settings;
 
-    /* Peer allowlist (read by wg_mgr, written by httpd) */
+    
     SemaphoreHandle_t peer_mutex;
     ml_config_peer_list_t peer_list;
     volatile bool filter_enabled;
 
-    /* WiFi multi-SSID list */
+    
     ml_config_wifi_list_t wifi_list;
 
-    /* Temperature sensor */
+    
     temperature_sensor_handle_t temp_sensor;
 
-    /* HTTP server */
+    
     httpd_handle_t httpd;
 
-    /* Backpointer */
+    
     microlink_t *ml;
 };
 
-/* ============================================================================
- * NVS Load/Save
- * ========================================================================== */
 
-static void config_save_peers(ml_config_ctx_t *ctx);  /* forward decl for migration */
+
+
+
+static void config_save_peers(ml_config_ctx_t *ctx);  
 
 static void config_load_settings(ml_config_ctx_t *ctx) {
-    /* Read whatever size blob exists — v1 blobs are smaller than v2 struct */
+    
     memset(&ctx->settings, 0, sizeof(ml_config_settings_t));
     size_t len = sizeof(ml_config_settings_t);
     esp_err_t err = nvs_get_blob(ctx->nvs, NVS_KEY_SETTINGS, &ctx->settings, &len);
 
     if (err == ESP_OK && ctx->settings.version >= 1) {
-        /* v1 blob is smaller — v2 fields will be zero (defaults) */
+        
         if (ctx->settings.version < ML_CONFIG_SETTINGS_VERSION) {
             ESP_LOGI(TAG, "Migrating settings v%d -> v%d",
                      ctx->settings.version, ML_CONFIG_SETTINGS_VERSION);
             ctx->settings.version = ML_CONFIG_SETTINGS_VERSION;
-            /* Save migrated blob so next boot loads full size */
+            
             nvs_set_blob(ctx->nvs, NVS_KEY_SETTINGS, &ctx->settings,
                          sizeof(ml_config_settings_t));
             nvs_commit(ctx->nvs);
@@ -102,9 +102,9 @@ static void config_load_settings(ml_config_ctx_t *ctx) {
         ESP_LOGI(TAG, "No saved settings in NVS");
     }
 
-    /* Seed empty fields from Kconfig compile-time defaults.
-     * This ensures the web UI displays sdkconfig values even before
-     * the user saves anything via the web interface. */
+    
+
+
     #define SEED_STR(field, kconfig) do { \
         if ((field)[0] == '\0' && strlen(kconfig) > 0) { \
             strncpy((field), (kconfig), sizeof(field) - 1); \
@@ -143,21 +143,21 @@ static void config_save_settings(ml_config_ctx_t *ctx) {
 }
 
 static void config_load_peers(ml_config_ctx_t *ctx) {
-    /* First, query the stored blob size without reading */
+    
     size_t stored_len = 0;
     esp_err_t err = nvs_get_blob(ctx->nvs, NVS_KEY_PEERS, NULL, &stored_len);
 
     if (err == ESP_OK && stored_len > 0) {
-        /* Old format used uint8_t count (1 byte), new format uses uint16_t (2 bytes).
-         * Detect old format by checking if stored size matches old layout:
-         * old = 1 + 28*N, new = 2 + 28*N. If (stored_len - 1) % 28 == 0 and
-         * (stored_len - 2) % 28 != 0, it's the old format. */
+        
+
+
+
         bool is_old_format = (stored_len >= 1) &&
                              ((stored_len - 1) % sizeof(ml_config_peer_entry_t) == 0) &&
                              ((stored_len - 2) % sizeof(ml_config_peer_entry_t) != 0);
 
         if (is_old_format) {
-            /* Read old format into temp buffer, migrate to new struct */
+            
             uint8_t *tmp = malloc(stored_len);
             if (tmp) {
                 size_t rlen = stored_len;
@@ -172,14 +172,14 @@ static void config_load_peers(ml_config_ctx_t *ctx) {
                                count * sizeof(ml_config_peer_entry_t));
                     }
                     ESP_LOGI(TAG, "Migrated peer allowlist from v1 (uint8 count=%d)", count);
-                    /* Re-save in new format */
+                    
                     config_save_peers(ctx);
                 }
                 free(tmp);
             }
         } else {
-            /* New format: blob may be smaller than struct (only used entries stored).
-             * Zero the struct first, then read up to stored_len bytes into it. */
+            
+
             memset(&ctx->peer_list, 0, sizeof(ctx->peer_list));
             size_t len = stored_len;
             if (len > sizeof(ml_config_peer_list_t)) len = sizeof(ml_config_peer_list_t);
@@ -200,8 +200,8 @@ static void config_load_peers(ml_config_ctx_t *ctx) {
 }
 
 static void config_save_peers(ml_config_ctx_t *ctx) {
-    /* Only write count + actual entries (not the full 512-entry array) to save NVS space.
-     * This reduces blob from ~14KB to just count*28+2 bytes. */
+    
+
     size_t save_len = sizeof(ctx->peer_list.count) +
                       ctx->peer_list.count * sizeof(ml_config_peer_entry_t);
     esp_err_t err = nvs_set_blob(ctx->nvs, NVS_KEY_PEERS, &ctx->peer_list, save_len);
@@ -213,9 +213,9 @@ static void config_save_peers(ml_config_ctx_t *ctx) {
     }
 }
 
-/* ============================================================================
- * WiFi List NVS Load/Save
- * ========================================================================== */
+
+
+
 
 static void config_load_wifi_list(ml_config_ctx_t *ctx) {
     memset(&ctx->wifi_list, 0, sizeof(ctx->wifi_list));
@@ -233,7 +233,7 @@ static void config_load_wifi_list(ml_config_ctx_t *ctx) {
         }
         ESP_LOGI(TAG, "WiFi list loaded: %d entries", ctx->wifi_list.count);
     } else {
-        /* No wifi_list key — migrate from settings blob if it has WiFi creds */
+        
         if (ctx->settings.wifi_ssid[0] != '\0') {
             ctx->wifi_list.count = 1;
             ctx->wifi_list.active_idx = 0;
@@ -247,7 +247,7 @@ static void config_load_wifi_list(ml_config_ctx_t *ctx) {
 }
 
 static void config_save_wifi_list(ml_config_ctx_t *ctx) {
-    /* Variable-size save: header (2 bytes) + count * entry_size */
+    
     size_t save_len = 2 + ctx->wifi_list.count * sizeof(ml_config_wifi_entry_t);
     esp_err_t err = nvs_set_blob(ctx->nvs, NVS_KEY_WIFI, &ctx->wifi_list, save_len);
     if (err == ESP_OK) {
@@ -260,19 +260,19 @@ static void config_save_wifi_list(ml_config_ctx_t *ctx) {
     }
 }
 
-/* ============================================================================
- * Peer Filter API (thread-safe, called from wg_mgr)
- * ========================================================================== */
+
+
+
 
 bool ml_config_peer_is_allowed(const ml_config_ctx_t *ctx, uint32_t vpn_ip) {
     if (!ctx) return true;
 
-    /* Fast path: filter disabled → allow all */
+    
     if (!ctx->filter_enabled) return true;
 
-    /* Slow path: check allowlist under mutex */
+    
     bool allowed = false;
-    ml_config_ctx_t *mctx = (ml_config_ctx_t *)ctx;  /* cast away const for mutex */
+    ml_config_ctx_t *mctx = (ml_config_ctx_t *)ctx;  
     if (xSemaphoreTake(mctx->peer_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         for (int i = 0; i < mctx->peer_list.count; i++) {
             if (mctx->peer_list.entries[i].vpn_ip == vpn_ip) {
@@ -282,15 +282,15 @@ bool ml_config_peer_is_allowed(const ml_config_ctx_t *ctx, uint32_t vpn_ip) {
         }
         xSemaphoreGive(mctx->peer_mutex);
     } else {
-        /* Mutex timeout: fail open */
+        
         allowed = true;
     }
     return allowed;
 }
 
-/* ============================================================================
- * Settings Query API
- * ========================================================================== */
+
+
+
 
 const char *ml_config_get_wifi_ssid(const ml_config_ctx_t *ctx) {
     if (!ctx || ctx->settings.wifi_ssid[0] == '\0') return NULL;
@@ -338,11 +338,11 @@ const char *ml_config_get_device_name_full(const ml_config_ctx_t *ctx) {
     return ctx->settings.device_name_full;
 }
 
-/* ============================================================================
- * HTTP Handlers
- * ========================================================================== */
 
-/* Helper: send JSON response */
+
+
+
+
 static esp_err_t send_json(httpd_req_t *req, cJSON *json) {
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
@@ -356,7 +356,7 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *json) {
     return ESP_OK;
 }
 
-/* Helper: read POST body into buffer */
+
 static char *read_post_body(httpd_req_t *req) {
     int content_len = req->content_len;
     if (content_len <= 0 || content_len > 4096) {
@@ -378,14 +378,14 @@ static char *read_post_body(httpd_req_t *req) {
     return buf;
 }
 
-/* GET / — serve HTML config page */
+
 static esp_err_t handler_root(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, CONFIG_PAGE_HTML);
     return ESP_OK;
 }
 
-/* GET /api/status */
+
 static esp_err_t handler_status(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
     microlink_t *ml = ctx->ml;
@@ -421,7 +421,7 @@ static esp_err_t handler_status(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* GET /api/settings */
+
 static esp_err_t handler_get_settings(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -429,7 +429,7 @@ static esp_err_t handler_get_settings(httpd_req_t *req) {
     if (!json) return ESP_FAIL;
 
     cJSON_AddStringToObject(json, "wifi_ssid", ctx->settings.wifi_ssid);
-    /* Don't expose password in plain text — show masked */
+    
     cJSON_AddStringToObject(json, "wifi_pass",
         ctx->settings.wifi_pass[0] ? "********" : "");
     cJSON_AddStringToObject(json, "auth_key",
@@ -442,7 +442,7 @@ static esp_err_t handler_get_settings(httpd_req_t *req) {
     cJSON_AddStringToObject(json, "ppp_pass",
         ctx->settings.ppp_pass[0] ? "********" : "");
 
-    /* v2 fields */
+    
     cJSON_AddNumberToObject(json, "max_peers", ctx->settings.max_peers);
     cJSON_AddNumberToObject(json, "disco_heartbeat_ms", ctx->settings.disco_heartbeat_ms);
     char pip_str[16] = "";
@@ -457,7 +457,7 @@ static esp_err_t handler_get_settings(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* POST /api/settings */
+
 static esp_err_t handler_post_settings(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -474,19 +474,19 @@ static esp_err_t handler_post_settings(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    /* Helper macro: clear field, copy new value, ensure null termination */
+    
     #define COPY_STR_FIELD(field, val) do { \
         memset((field), 0, sizeof(field)); \
         strncpy((field), (val), sizeof(field) - 1); \
     } while(0)
 
-    /* Update only provided fields (don't clear fields not in the request) */
+    
     cJSON *item;
     if ((item = cJSON_GetObjectItem(json, "wifi_ssid")) && cJSON_IsString(item)) {
         COPY_STR_FIELD(ctx->settings.wifi_ssid, item->valuestring);
     }
-    /* For secret fields: skip masked placeholders AND empty strings to prevent
-     * accidental credential wipe (browsers may send empty password inputs) */
+    
+
     if ((item = cJSON_GetObjectItem(json, "wifi_pass")) && cJSON_IsString(item)) {
         const char *v = item->valuestring;
         if (v[0] != '\0' && strcmp(v, "********") != 0) {
@@ -520,7 +520,7 @@ static esp_err_t handler_post_settings(httpd_req_t *req) {
             COPY_STR_FIELD(ctx->settings.ppp_pass, v);
         }
     }
-    /* v2 fields */
+    
     if ((item = cJSON_GetObjectItem(json, "max_peers")) && cJSON_IsNumber(item)) {
         int v = (int)item->valuedouble;
         ctx->settings.max_peers = (v >= 0 && v <= 64) ? (uint8_t)v : 0;
@@ -552,7 +552,7 @@ static esp_err_t handler_post_settings(httpd_req_t *req) {
     return send_json(req, resp);
 }
 
-/* GET /api/peers — all known peers with status */
+
 static esp_err_t handler_get_peers(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
     microlink_t *ml = ctx->ml;
@@ -584,7 +584,7 @@ static esp_err_t handler_get_peers(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* GET /api/peers/allowed — current allowlist */
+
 static esp_err_t handler_get_allowed(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -609,7 +609,7 @@ static esp_err_t handler_get_allowed(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* POST /api/peers/allowed — replace allowlist */
+
 static esp_err_t handler_post_allowed(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -670,7 +670,7 @@ static esp_err_t handler_post_allowed(httpd_req_t *req) {
     return send_json(req, resp);
 }
 
-/* DELETE /api/peers/allowed — clear allowlist */
+
 static esp_err_t handler_delete_allowed(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -689,7 +689,7 @@ static esp_err_t handler_delete_allowed(httpd_req_t *req) {
     return send_json(req, resp);
 }
 
-/* GET /api/monitor — temperature, RSSI, uptime, task stack watermarks */
+
 static esp_err_t handler_monitor(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
     microlink_t *ml = ctx->ml;
@@ -697,7 +697,7 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
     cJSON *json = cJSON_CreateObject();
     if (!json) return ESP_FAIL;
 
-    /* Temperature */
+    
     float temp_c = 0;
     if (ctx->temp_sensor) {
         if (temperature_sensor_get_celsius(ctx->temp_sensor, &temp_c) == ESP_OK) {
@@ -709,7 +709,7 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
         cJSON_AddNullToObject(json, "temp_c");
     }
 
-    /* WiFi RSSI */
+    
     int rssi = 0;
     if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) {
         cJSON_AddNumberToObject(json, "rssi", rssi);
@@ -717,24 +717,24 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
         cJSON_AddNullToObject(json, "rssi");
     }
 
-    /* WiFi channel info */
+    
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         cJSON_AddNumberToObject(json, "wifi_channel", ap_info.primary);
         cJSON_AddStringToObject(json, "wifi_ssid", (char *)ap_info.ssid);
     }
 
-    /* Uptime */
+    
     uint64_t uptime_ms = esp_timer_get_time() / 1000;
     cJSON_AddNumberToObject(json, "uptime_s", (double)(uptime_ms / 1000));
 
-    /* Heap */
+    
     cJSON_AddNumberToObject(json, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(json, "min_free_heap", esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(json, "free_psram",
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    /* Task stack watermarks */
+    
     if (ml) {
         cJSON *tasks = cJSON_AddObjectToObject(json, "tasks");
         struct { const char *name; TaskHandle_t handle; } tlist[] = {
@@ -754,12 +754,12 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
             }
         }
 
-        /* DERP status */
+        
         cJSON_AddBoolToObject(json, "derp_connected", ml->derp.connected);
         cJSON_AddNumberToObject(json, "derp_home_region", ml->derp_home_region);
     }
 
-    /* Connection type */
+    
 #ifdef CONFIG_ML_ENABLE_CELLULAR
     if (ml_at_socket_is_ready()) {
         cJSON_AddStringToObject(json, "connection", "cellular");
@@ -773,22 +773,22 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* POST /api/restart */
+
 static esp_err_t handler_restart(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"restarting\":true}");
 
-    /* Delay to let response complete, then restart */
+    
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
-    return ESP_OK;  /* unreachable */
+    return ESP_OK;  
 }
 
-/* ============================================================================
- * WiFi List HTTP Handlers
- * ========================================================================== */
 
-/* GET /api/wifi — return WiFi list with masked passwords */
+
+
+
+
 static esp_err_t handler_get_wifi(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -810,7 +810,7 @@ static esp_err_t handler_get_wifi(httpd_req_t *req) {
     return send_json(req, json);
 }
 
-/* POST /api/wifi — replace entire WiFi list */
+
 static esp_err_t handler_post_wifi(httpd_req_t *req) {
     ml_config_ctx_t *ctx = (ml_config_ctx_t *)req->user_ctx;
 
@@ -834,11 +834,11 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    /* Save old list so we can resolve masked passwords */
+    
     ml_config_wifi_list_t old_list;
     memcpy(&old_list, &ctx->wifi_list, sizeof(old_list));
 
-    /* Build new list */
+    
     memset(&ctx->wifi_list, 0, sizeof(ctx->wifi_list));
     ctx->wifi_list.active_idx = 0xFF;
 
@@ -856,7 +856,7 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
         if (pass && cJSON_IsString(pass)) {
             const char *pv = pass->valuestring;
             if (strcmp(pv, "********") == 0) {
-                /* Masked: find matching SSID in old list and copy password */
+                
                 for (int j = 0; j < old_list.count; j++) {
                     if (strcmp(old_list.entries[j].ssid, e->ssid) == 0) {
                         strncpy(e->pass, old_list.entries[j].pass, sizeof(e->pass) - 1);
@@ -871,7 +871,7 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
     }
     cJSON_Delete(json);
 
-    /* Update settings blob wifi_ssid/wifi_pass with entry[0] for backwards compat */
+    
     if (ctx->wifi_list.count > 0) {
         memset(ctx->settings.wifi_ssid, 0, sizeof(ctx->settings.wifi_ssid));
         memset(ctx->settings.wifi_pass, 0, sizeof(ctx->settings.wifi_pass));
@@ -893,9 +893,9 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
     return send_json(req, resp);
 }
 
-/* ============================================================================
- * WiFi List Public API
- * ========================================================================== */
+
+
+
 
 bool ml_config_get_wifi_list(ml_config_wifi_list_t *list) {
     if (!list) return false;
@@ -907,7 +907,7 @@ bool ml_config_get_wifi_list(ml_config_wifi_list_t *list) {
     memset(list, 0, sizeof(*list));
     list->active_idx = 0xFF;
 
-    /* Try wifi_list key first */
+    
     size_t stored_len = 0;
     err = nvs_get_blob(nvs, NVS_KEY_WIFI, NULL, &stored_len);
     if (err == ESP_OK && stored_len >= 2) {
@@ -918,12 +918,12 @@ bool ml_config_get_wifi_list(ml_config_wifi_list_t *list) {
             nvs_close(nvs);
             return true;
         }
-        /* Invalid data, fall through */
+        
         memset(list, 0, sizeof(*list));
         list->active_idx = 0xFF;
     }
 
-    /* Fall back to settings blob WiFi (heap-alloc to avoid stack overflow) */
+    
     ml_config_settings_t *settings = heap_caps_malloc(sizeof(*settings), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!settings) { nvs_close(nvs); return false; }
     memset(settings, 0, sizeof(*settings));
@@ -944,13 +944,13 @@ bool ml_config_get_wifi_list(ml_config_wifi_list_t *list) {
     return false;
 }
 
-/* ============================================================================
- * Early Boot WiFi Override (reads NVS without full config init)
- * ========================================================================== */
+
+
+
 
 bool ml_config_get_nvs_wifi(char *ssid, size_t ssid_len,
                              char *pass, size_t pass_len) {
-    /* Heap-allocate to avoid stack overflow in app_main (1570+400 bytes) */
+    
     ml_config_wifi_list_t *wlist = heap_caps_malloc(sizeof(*wlist), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (wlist && ml_config_get_wifi_list(wlist) && wlist->count > 0) {
         if (ssid && ssid_len > 0) {
@@ -965,9 +965,9 @@ bool ml_config_get_nvs_wifi(char *ssid, size_t ssid_len,
         free(wlist);
         return true;
     }
-    free(wlist);  /* NULL-safe */
+    free(wlist);  
 
-    /* Fall back to settings blob */
+    
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
     if (err != ESP_OK) return false;
@@ -1057,9 +1057,9 @@ bool ml_config_get_nvs_apn(char *apn, size_t apn_len) {
     return true;
 }
 
-/* ============================================================================
- * Lifecycle
- * ========================================================================== */
+
+
+
 
 ml_config_ctx_t *ml_config_httpd_init(void) {
     ml_config_ctx_t *ctx = calloc(1, sizeof(ml_config_ctx_t));
@@ -1084,7 +1084,7 @@ ml_config_ctx_t *ml_config_httpd_init(void) {
     config_load_peers(ctx);
     config_load_wifi_list(ctx);
 
-    /* Initialize temperature sensor */
+    
     temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
     if (temperature_sensor_install(&tsens_cfg, &ctx->temp_sensor) == ESP_OK) {
         temperature_sensor_enable(ctx->temp_sensor);
@@ -1113,7 +1113,7 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
         return err;
     }
 
-    /* Register URI handlers */
+    
     const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,    .handler = handler_root,          .user_ctx = ctx },
         { .uri = "/api/status",      .method = HTTP_GET,    .handler = handler_status,        .user_ctx = ctx },
@@ -1158,4 +1158,4 @@ void ml_config_httpd_deinit(ml_config_ctx_t *ctx) {
     free(ctx);
 }
 
-#endif /* CONFIG_ML_ENABLE_CONFIG_HTTPD */
+#endif 

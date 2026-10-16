@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "ready_logic.h"
 #include "state.h"
 
@@ -31,8 +31,8 @@ static const char *TAG = "ready";
 static ready_logic_t s_logic;
 static TaskHandle_t s_task = NULL;
 static char s_status[96] = "ready: inactivo";
-static char s_host[96] = CONFIG_COCOPA01_TS_HOSTNAME;
-static char s_path[96] = "/cocopa/";
+static char s_host[96] = CONFIG_SERVER_TS_HOSTNAME;
+static char s_path[96] = "/app/";
 
 
 
@@ -59,7 +59,7 @@ static uint32_t now_ms(void) {
 
 
 static void derive_target(void) {
-    const char *url = CONFIG_GATE_COCOPA_URL;
+    const char *url = CONFIG_GATE_APP_URL;
     if (url == NULL || *url == 0) return;
     const char *p = strstr(url, "://");
     p = p ? (p + 3) : url;
@@ -75,8 +75,8 @@ static void derive_target(void) {
         size_t n = strlen(s_path);
         if (n + 1 < sizeof(s_path)) { s_path[n] = '/'; s_path[n + 1] = 0; }
     }
-    // El health del backend cuelga del mismo prefijo que el shell: /cocopa ->
-    // /cocopa/api/v1/health.
+    // El health del backend cuelga del mismo prefijo que el shell: /app ->
+    // /app/api/v1/health.
     {
         char base[80];
         snprintf(base, sizeof(base), "%s", s_path);
@@ -84,8 +84,8 @@ static void derive_target(void) {
         while (n > 0 && base[n - 1] == '/') base[--n] = 0;
         snprintf(s_api_path, sizeof(s_api_path), "%s/api/v1/health", base);
     }
-    ESP_LOGI(TAG, "sonda: GET %s:%d%s y %s (Host %s)", CONFIG_COCOPA01_IP,
-             (unsigned)CONFIG_COCOPA01_PROXY_PORT, s_path, s_api_path, s_host);
+    ESP_LOGI(TAG, "sonda: GET %s:%d%s y %s (Host %s)", CONFIG_SERVER_IP,
+             (unsigned)CONFIG_SERVER_PROXY_PORT, s_path, s_api_path, s_host);
 }
 
 static void set_status_text(const char *text) {
@@ -101,22 +101,22 @@ static void probe_once(void) {
     // 1) EVIDENCIA OBLIGATORIA: la peticion que el cliente va a hacer, resuelta
     //    por la IP LAN con el Host publico (mismo virtual host de nginx que el
     //    tunel selecciona). Un 502 explicito cuenta como todavia NO.
-    int32_t status = cocopa01_http_probe_at(CONFIG_COCOPA01_IP,
-                                           CONFIG_COCOPA01_PROXY_PORT,
+    int32_t status = server_http_probe_at(CONFIG_SERVER_IP,
+                                           CONFIG_SERVER_PROXY_PORT,
                                            s_host, s_path, READY_HTTP_MS);
     bool backend = (status >= 200 && status < 400);
 
     // 1b) Y ahora la parte que de verdad importa para el operador: el BACKEND.
     //     nginx levanta el shell de la SPA antes de que FastAPI termine el startup,
     //     asi que hay una ventana (medida: varios segundos en arranque en frio) en la
-    //     que /cocopa/ responde 200 pero /cocopa/api/v1/ todavia no tiene upstream y
+    //     que /app/ responde 200 pero /app/api/v1/ todavia no tiene upstream y
     //     responde 502. En esa ventana la SPA abria con "No hay usuarios registrados"
     //     y un boton de crear admin, y el operador tenia que recargar a mano.
     //     Con esta segunda comprobacion el latch no se enciende hasta que la API
     //     responde de verdad.
     int32_t api_status = -1;
     if (backend) {
-        api_status = cocopa01_http_probe_at(CONFIG_COCOPA01_IP, CONFIG_COCOPA01_PROXY_PORT,
+        api_status = server_http_probe_at(CONFIG_SERVER_IP, CONFIG_SERVER_PROXY_PORT,
                                              s_host, s_api_path, READY_API_MS);
     }
     bool api_ok = (api_status >= 200 && api_status < 400);
@@ -126,7 +126,7 @@ static void probe_once(void) {
     //    ESP32 alcanza ese puerto, un "no" bloquea (el tunel daria 502). Si no hay
     //    ruta tailnet desde el ESP32, el chequeo se omite porque no es informacion
     //    que el ESP32 pueda tener: quien verifica la ruta publica de punta a
-    //    punta es cocopa01, con GET /notify/ready.
+    //    punta es server, con GET /notify/ready.
     //
     // OJO con el costo: cuando esa ruta NO existe (medido el 2026-10-15), cada
     // connect se comia los 400 ms completos del timeout en cada sonda, o sea dos
@@ -135,8 +135,8 @@ static void probe_once(void) {
     // vez se logra, a partir de ahi se exige en cada sonda (1-3 ms, son peers).
     bool tunnel = s_funnel_reachable;
     if (s_funnel_reachable || s_probes_since_funnel_check >= READY_FUNNEL_RECHECK_EVERY) {
-        tunnel = cocopa01_tcp_port_alive_at(CONFIG_COCOPA01_TS_IP,
-                                            CONFIG_COCOPA01_FUNNEL_PORT,
+        tunnel = server_tcp_port_alive_at(CONFIG_SERVER_TS_IP,
+                                            CONFIG_SERVER_FUNNEL_PORT,
                                             READY_TUNNEL_TCP_MS);
         s_probes_since_funnel_check = 0;
     } else {
@@ -146,8 +146,8 @@ static void probe_once(void) {
         s_funnel_reachable = true;
     } else if (backend && !s_funnel_reachable && !s_funnel_warned) {
         s_funnel_warned = true;
-        ESP_LOGW(TAG, "sin ruta tailnet del ESP32 a %s:%d: el chequeo del listener del Funnel queda informativo y solo se reintenta cada %u sondas; la verificacion de punta a punta la hace cocopa01 con GET /notify/ready",
-                 CONFIG_COCOPA01_TS_IP, (unsigned)CONFIG_COCOPA01_FUNNEL_PORT,
+        ESP_LOGW(TAG, "sin ruta tailnet del ESP32 a %s:%d: el chequeo del listener del Funnel queda informativo y solo se reintenta cada %u sondas; la verificacion de punta a punta la hace server con GET /notify/ready",
+                 CONFIG_SERVER_TS_IP, (unsigned)CONFIG_SERVER_FUNNEL_PORT,
                  (unsigned)READY_FUNNEL_RECHECK_EVERY);
     }
 
@@ -160,10 +160,10 @@ static void probe_once(void) {
     set_status_text(line);
 
     if (ok && !was_ready) {
-        ESP_LOGI(TAG, "cocopa01 LISTO: SPA HTTP %ld + API HTTP %ld en %ums%s", (long)status, (long)api_status, (unsigned)(done - t0), tunnel ? " + funnel :443 ok" : " (funnel no verificado desde el ESP32)");
+        ESP_LOGI(TAG, "server LISTO: SPA HTTP %ld + API HTTP %ld en %ums%s", (long)status, (long)api_status, (unsigned)(done - t0), tunnel ? " + funnel :443 ok" : " (funnel no verificado desde el ESP32)");
         ESP_LOGI(TAG, "  -> %s", line);
     } else if (!ok && was_ready) {
-        ESP_LOGW(TAG, "cocopa01 dejo de responder (backend HTTP %ld): el latch cae", (long)status);
+        ESP_LOGW(TAG, "server dejo de responder (backend HTTP %ld): el latch cae", (long)status);
     } else if (!ok) {
         ESP_LOGD(TAG, "aun no: SPA HTTP %ld, API HTTP %ld (%ums)", (long)status, (long)api_status, (unsigned)(done - t0));
     }
@@ -177,10 +177,10 @@ static void ready_task(void *arg) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(READY_TICK_MS));
         uint32_t now = now_ms();
         bool armed = ready_logic_armed(&s_logic, now);
-        cocopa01_state_t st = state_get();
+        server_state_t st = state_get();
 
-        if (st != COCOPA01_STATE_ON) {
-            // Cocopa01 no esta: el latch viejo no puede seguir sirviendo de base
+        if (st != SERVER_STATE_ON) {
+            // App01 no esta: el latch viejo no puede seguir sirviendo de base
             // para un 302 (era exactamente la trampa de las sesiones 29 y 32).
             //
             // PERO con rebote de dos observaciones: durante un arranque el poll de
@@ -192,8 +192,8 @@ static void ready_task(void *arg) {
             // parpadeo del latch, no cambia la logica de OFF ni la automation.
             if (++s_off_observations >= 2) {
                 if (s_logic.latched) {
-                    ESP_LOGI(TAG, "cocopa01 paso a %s: latch apagado",
-                             cocopa01_state_str(st));
+                    ESP_LOGI(TAG, "server paso a %s: latch apagado",
+                             server_state_str(st));
                     ready_logic_invalidate(&s_logic, now);
                 }
             }
@@ -238,7 +238,7 @@ bool ready_is_ready(void) {
 void ready_notify_ready(void) {
     uint32_t now = now_ms();
     if (!s_logic.latched) {
-        ESP_LOGI(TAG, "cocopa01 avisa que ya esta listo (GET /notify/ready): el portal redirige de inmediato");
+        ESP_LOGI(TAG, "server avisa que ya esta listo (GET /notify/ready): el portal redirige de inmediato");
     }
     // ok=true con el codigo 0: el aviso del servidor es evidencia de por si solo,
     // no viene de una respuesta HTTP que el ESP32 haya hecho.
@@ -258,7 +258,7 @@ void ready_notify_unready(void) {
     ready_logic_set_public_broken(&s_logic, true);
     ready_logic_invalidate(&s_logic, now);
 
-    set_status_text("ready: ruta publica de cocopa01 caida (aviso del servidor)");
+    set_status_text("ready: ruta publica de server caida (aviso del servidor)");
 }
 
 bool ready_public_broken(void) {

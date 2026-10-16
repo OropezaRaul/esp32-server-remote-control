@@ -11,7 +11,7 @@
 
 #include "automation.h"
 #include "wol.h"
-#include "cocopa01_client.h"
+#include "server_client.h"
 #include "state.h"
 #include "microlink_wrapper.h"
 
@@ -46,12 +46,12 @@ static int parse_http_path(const char *buf, int len, char *out, int out_size) {
     return j;
 }
 
-// Decide qué IP de cocopa01 usar cuando el mapping tiene upstream_host=""
-// (auto-routing). Peer en LAN -> cocopa01 LAN, peer por Tailscale -> cocopa01 TS.
-static const char *auto_route_cocopa01_host(struct sockaddr_in *peer) {
+// Decide qué IP de server usar cuando el mapping tiene upstream_host=""
+// (auto-routing). Peer en LAN -> server LAN, peer por Tailscale -> server TS.
+static const char *auto_route_server_host(struct sockaddr_in *peer) {
     uint32_t a = ntohl(peer->sin_addr.s_addr);
-    if ((a & 0xFFFF0000UL) == 0xC0A80000UL) return CONFIG_COCOPA01_IP;
-    return CONFIG_COCOPA01_TS_IP;
+    if ((a & 0xFFFF0000UL) == 0xC0A80000UL) return CONFIG_SERVER_IP;
+    return CONFIG_SERVER_TS_IP;
 }
 
 // Resuelve el upstream_host efectivo para esta conexión: lo declarado en
@@ -64,7 +64,7 @@ static const char *resolve_host(const portmap_entry_t *entry,
     if (entry->upstream_host[0]) {
         src = entry->upstream_host;
     } else {
-        src = auto_route_cocopa01_host(peer);
+        src = auto_route_server_host(peer);
     }
     strncpy(scratch, src, scratch_size - 1);
     scratch[scratch_size - 1] = 0;
@@ -205,9 +205,9 @@ static bool ensure_upstream_up(const char *host, uint16_t port, uint32_t timeout
         return true;
     }
 
-    cocopa01_state_t st = state_get();
+    server_state_t st = state_get();
     ESP_LOGI(TAG, "ensure: %s:%u down (state=%s), sending WOL",
-             host, (unsigned)port, cocopa01_state_str(st));
+             host, (unsigned)port, server_state_str(st));
     esp_err_t wres = wol_send_default();
     if (wres != ESP_OK) {
         ESP_LOGW(TAG, "ensure: WOL failed: %s", esp_err_to_name(wres));
