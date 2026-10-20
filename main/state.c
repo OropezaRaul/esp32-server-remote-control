@@ -21,12 +21,27 @@
 
 #define NVS_NAMESPACE_STATE   "server"
 #define NVS_KEY_BOOT_TIME     "boot_time"
+#define NVS_KEY_SUSPECT_SUSP  "suspect_susp"
+#define NVS_KEY_LAST_ALIVE    "last_alive"
 
 static const char *TAG = "state";
 
 static volatile server_state_t g_state = SERVER_STATE_UNKNOWN;
 static volatile uint32_t g_state_entered_ms = 0;
 static volatile uint32_t g_last_known_on_ms = 0;
+// Ultimo instante (reloj de pared, unix) en que vimos server con vida.
+// Se persiste en NVS para que un reinicio del ESP32 (el auto-reboot es
+// horario) no borre el dato: sin el, despues de un reinicio el ESP32 ya no
+// sabia que el servidor estaba en S3 y un /off contestaba "already off".
+static volatile uint32_t g_last_alive_unix = 0;
+static uint32_t s_last_alive_persist_ms = 0;
+// true cuando sabemos (o creemos saber) que server esta en S3: lo mandamos
+// a suspender, el poll lo vio desaparecer, o el estado se degrado de SUSPEND
+// a OFF. Sin este dato, un /off sobre un servidor suspendido contestaba
+// "already off" y no apagaba nada (el equipo se quedaba encendido para
+// siempre con la Tailscale caida). Persistido en NVS para sobrevivir al
+// auto-reboot horario del ESP32.
+static volatile bool g_suspect_suspended = false;
 static volatile uint32_t g_server_boot_time = 0;
 static volatile uint32_t g_last_poll_ms = 0;
 static volatile bool g_last_poll_tcp_alive = false;
@@ -75,6 +90,69 @@ static uint32_t load_persisted_boot_time(void) {
 }
 
 uint32_t state_server_boot_time(void) { return g_server_boot_time; }
+
+// ─── Rastro de suspension ──────────────────────────────────────
+
+static void persist_suspect_suspended(bool v) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE_STATE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_SUSPECT_SUSP, v ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void set_suspect_suspended(bool v) {
+    if (g_suspect_suspended == v) return;
+    g_suspect_suspended = v;
+    persist_suspect_suspended(v);
+    ESP_LOGI(TAG, "rastro de suspension: %d", (int)v);
+}
+
+bool state_suspect_suspended(void) { return g_suspect_suspended; }
+
+void state_mark_suspended(void) { set_suspect_suspended(true); }
+
+void state_clear_suspect_suspended(void) { set_suspect_suspended(false); }
+
+// ─── Ultimo instante en que vimos el servidor con vida ─────────
+static void persist_last_alive(uint32_t unix_ts) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE_STATE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, NVS_KEY_LAST_ALIVE, unix_ts);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// Se llama cada vez que el servidor responde. Se persiste con throttle de
+// 60 s (un commit por minuto en NVS es aceptable con wear leveling) para no
+// castigar el flash con un commit cada 30 s.
+static void note_alive_now(void) {
+    uint32_t now_unix = (uint32_t)time(NULL);
+    if (now_unix < 1704067200) return;   // reloj sin sincronizar
+    g_last_alive_unix = now_unix;
+    uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if (now_ms - s_last_alive_persist_ms >= 60000UL) {
+        s_last_alive_persist_ms = now_ms;
+        persist_last_alive(now_unix);
+    }
+}
+
+// true si vimos al servidor con vida hace poco (< LAST_ON_HEURISTIC_MS),
+// sea en este boot (contador de ticks) o en el anterior (reloj de pared).
+static bool seen_alive_recently(void) {
+    uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if (g_last_known_on_ms != 0 && (now_ms - g_last_known_on_ms) < LAST_ON_HEURISTIC_MS) {
+        return true;
+    }
+    if (g_last_alive_unix != 0) {
+        uint32_t now_unix = (uint32_t)time(NULL);
+        if (now_unix > g_last_alive_unix &&
+            (now_unix - g_last_alive_unix) < (LAST_ON_HEURISTIC_MS / 1000UL)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Registra un boot_time leido EN VIVO por HTTP. Si difiere del que teniamos,
 // server arranco de cero (no es un resume desde S3) y hay que esperar a que
@@ -225,6 +303,29 @@ void state_set(server_state_t s) {
     // que alguien prendió o despertó el servidor → resetear timer de inactividad.
     if (s == SERVER_STATE_ON && prev != SERVER_STATE_ON) {
         automation_kick();
+    }
+
+    // Rastro de suspensión:
+    //  - ON  -> el equipo volvio: ya no hay nada que despertar.
+    //  - SUSPEND -> lo vemos (o lo mandamos) dormir: hay que despertarlo con WOL
+    //    antes de poder apagarlo.
+    //  - OFF desde SUSPEND -> es la degradacion del poll (5 min sin respuesta):
+    //    el equipo sigue en S3, el rastro se mantiene.
+    //  - OFF desde ON/UNKNOWN -> apagado real: no queda rastro.
+    if (s == SERVER_STATE_ON) {
+        set_suspect_suspended(false);
+    } else if (s == SERVER_STATE_SUSPEND) {
+        set_suspect_suspended(true);
+    } else if (s == SERVER_STATE_OFF) {
+        if (prev == SERVER_STATE_SUSPEND) {
+            // Degradacion del poll: el equipo sigue en S3, el rastro se mantiene.
+            set_suspect_suspended(true);
+        } else if (prev == SERVER_STATE_ON) {
+            // Estaba encendido y se apago de verdad -> no hay nada que despertar.
+            set_suspect_suspended(false);
+        }
+        // prev == UNKNOWN: se conserva el valor restaurado de NVS (puede venir
+        // de un boot anterior donde el servidor quedo suspendido).
     }
 }
 
@@ -472,13 +573,25 @@ static server_state_t query_state(void) {
     g_last_poll_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     if (server_tcp_alive(400)) {
         g_last_poll_tcp_alive = true;
+        // IMPORTANTE: refrescar "lo vi vivo" en CADA poll, no solo cuando cambia
+        // el estado. Antes g_last_known_on_ms solo se actualizaba en las
+        // transiciones a ON, asi que un equipo que llevaba horas encendido y
+        // luego se suspendia (S3) quedaba con un "lo vi vivo" de hace horas:
+        // la heuristica de 5 min lo degradaba a OFF en vez de SUSPEND, y el
+        // /off contestaba "already off" sin apagar nada.
+        g_last_known_on_ms = g_last_poll_ms;
+        note_alive_now();
         return SERVER_STATE_ON;
     }
     g_last_poll_tcp_alive = false;
 
     const char *http_result = query_http_state();
 
-    if (strcmp(http_result, "ON") == 0) return SERVER_STATE_ON;
+    if (strcmp(http_result, "ON") == 0) {
+        g_last_known_on_ms = g_last_poll_ms;
+        note_alive_now();
+        return SERVER_STATE_ON;
+    }
     if (strcmp(http_result, "OFF") == 0) return SERVER_STATE_OFF;
 
     // Cualquier fallo (TIMEOUT, ERR_*, etc.) se trata igual: server no
@@ -488,7 +601,7 @@ static server_state_t query_state(void) {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     if (http_result != NULL && strncmp(http_result, "ERR_", 4) != 0 &&
         g_state != SERVER_STATE_OFF &&
-        g_last_known_on_ms != 0 && (now - g_last_known_on_ms) < LAST_ON_HEURISTIC_MS) {
+        seen_alive_recently()) {
         ESP_LOGW(TAG, "[STATE] poll returned '%s' but recently ON, treating as SUSPEND",
                  http_result);
         return SERVER_STATE_SUSPEND;
@@ -560,6 +673,37 @@ void state_init(void) {
     g_last_poll_ms = 0;
     g_last_poll_tcp_alive = false;
     g_server_boot_time = load_persisted_boot_time();
+    // Ultimo instante en que vimos el servidor con vida (puede ser de un
+    // boot anterior): sin esto, tras el auto-reboot horario el ESP32
+    // "olvidaba" que el servidor estaba suspendido en S3.
+    {
+        nvs_handle_t h;
+        uint32_t v = 0;
+        if (nvs_open(NVS_NAMESPACE_STATE, NVS_READONLY, &h) == ESP_OK) {
+            if (nvs_get_u32(h, NVS_KEY_LAST_ALIVE, &v) == ESP_OK) {
+                g_last_alive_unix = v;
+            }
+            nvs_close(h);
+        }
+        if (g_last_alive_unix != 0) {
+            ESP_LOGI(TAG, "restaurado last_alive_unix=%u", (unsigned)g_last_alive_unix);
+        }
+    }
+    // El rastro de suspension sobrevive al auto-reboot: sin el, un /off
+    // despues de un reinicio del ESP32 no distinguiria "apagado" de "suspendido".
+    {
+        nvs_handle_t h;
+        uint8_t v = 0;
+        if (nvs_open(NVS_NAMESPACE_STATE, NVS_READONLY, &h) == ESP_OK) {
+            if (nvs_get_u8(h, NVS_KEY_SUSPECT_SUSP, &v) == ESP_OK) {
+                g_suspect_suspended = (v != 0);
+            }
+            nvs_close(h);
+        }
+        if (g_suspect_suspended) {
+            ESP_LOGI(TAG, "rastro de suspension restaurado de NVS: 1");
+        }
+    }
     // El boot_time de NVS es orientativo hasta que hagamos una lectura en vivo
     // de /state en este boot: recien ahi sabemos si el server arranco de cero.
     g_boot_changed_ms = 0;

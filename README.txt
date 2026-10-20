@@ -322,20 +322,44 @@ lightweight daemon runs on the target server.
 [+] Create /usr/local/bin/esp32-shutdown-server.py:
 -------------------------------------------------------------------
 #!/usr/bin/env python3
+"""ESP32 shutdown/suspend daemon (target server side).
+
+IMPORTANT: the HTTP 200 is sent BEFORE the action runs, in a background
+thread. If the action runs first, the machine suspends/powers off before
+the response leaves the box and the gateway never sees the confirmation
+(it then reports the command as failed and keeps stale state).
+"""
 import http.server
-import subprocess
-import secrets
-import sys
+import json
 import os
+import secrets
+import subprocess
+import threading
+import time
 
 SECRET_FILE = "/etc/esp32-shutdown/secret"
 PORT = 9999
+# Bind to the LAN address of the server (not 0.0.0.0) to keep the daemon
+# off the tailnet. The ESP32 reaches it over the LAN.
+BIND = os.environ.get("ESP32_SHUTDOWN_BIND", "192.168.1.100")
 
 def get_secret():
-    if os.path.exists(SECRET_FILE):
-        with open(SECRET_FILE, "r") as f:
-            return f.read().strip()
-    return "Your_Generated_Secret_Token"
+    with open(SECRET_FILE, "r") as f:
+        return f.read().strip()
+
+def run_action(action):
+    cmd = ["sudo", "-n", "/usr/bin/systemctl", action]
+    r = subprocess.run(cmd, timeout=20, capture_output=True, text=True)
+    if r.returncode == 0:
+        return True, action + " sent"
+    # A shutdown inhibitor (unattended-upgrades, for instance) can block
+    # the poweroff and leave the machine running: retry ignoring it.
+    if action == "poweroff" and "inhibit" in (r.stderr or "").lower():
+        r2 = subprocess.run(cmd + ["--force"], timeout=20,
+                            capture_output=True, text=True)
+        if r2.returncode == 0:
+            return True, "poweroff sent (forced: shutdown inhibitor was active)"
+    return False, action + " failed: " + (r.stderr or "").strip()
 
 class ShutdownHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -355,20 +379,31 @@ class ShutdownHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if self.path == "/suspend":
+        action = self.path.lstrip("/")
+        if action in ("suspend", "poweroff", "hibernate"):
+            # 1) answer first
+            payload = json.dumps({"ok": True, "action": action}).encode()
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            subprocess.Popen(["systemctl", "suspend"])
-        elif self.path == "/off":
-            self.send_response(200)
-            self.end_headers()
-            subprocess.Popen(["systemctl", "poweroff"])
+            self.wfile.write(payload)
+            # 2) then act, in the background
+            t = threading.Thread(target=self._run_later, args=(action,),
+                                daemon=True)
+            t.start()
         else:
             self.send_response(404)
             self.end_headers()
 
+    def _run_later(self, action):
+        time.sleep(0.4)   # let the 200 leave the box first
+        ok, msg = run_action(action)
+        print("%s: %s" % (action, msg), flush=True)
+
 if __name__ == "__main__":
-    server = http.server.HTTPServer(("0.0.0.0", PORT), ShutdownHandler)
+    server = http.server.ThreadingHTTPServer((BIND, PORT), ShutdownHandler)
+    server.daemon_threads = True
     server.serve_forever()
 -------------------------------------------------------------------
 
@@ -377,12 +412,16 @@ if __name__ == "__main__":
     -------------------------------------------------------------------
     [Unit]
     Description=ESP32 Shutdown & State Daemon
-    After=network.target
+    After=network-online.target
+    Wants=network-online.target
 
     [Service]
+    Type=simple
     ExecStart=/usr/bin/python3 /usr/local/bin/esp32-shutdown-server.py
-    Restart=always
-    User=root
+    # on-failure, NOT always: during a poweroff systemd stops this service
+    # and "always" would fight the shutdown transaction.
+    Restart=on-failure
+    RestartSec=5
 
     [Install]
     WantedBy=multi-user.target
@@ -394,6 +433,48 @@ if __name__ == "__main__":
 ------------------------------------------------------------------------------
 8. PUBLIC RELEASE CHANGELOG
 ------------------------------------------------------------------------------
+v1.8.3 - Power-off cycle (2026-10-20)
+--------------------------------------------
+- Single shared power-off sequence (WOL if the host is asleep, then /off),
+  used by the Telegram /off, the inactivity automation and the daily
+  schedule. Before this, the same logic was duplicated three times and each
+  copy had the same defects:
+  * an unreachable host was reported as "already off" without sending
+    anything, so a host suspended in S3 stayed suspended forever (with its
+    tailnet link down);
+  * the S3 -> S0 -> S5 path blocked the calling task for up to ~90 s, more
+    than the 90 s heartbeat budget of the health supervisor, so the gateway
+    restarted itself in the middle of a shutdown and the bot went silent;
+  * the shutdown is now confirmed by probing when the HTTP reply is lost
+    (the daemon powers the machine off before it answers), and the Telegram
+    command runs in the background so the bot keeps answering.
+- S3 vs S5: the state machine no longer degrades a suspended host to OFF
+  after 5 minutes, and the "the host was suspended" hint survives a
+  gateway restart.
+- The inactivity timer no longer cancels a pending power-off while the host
+  is suspended (every portal hit used to cancel it).
+- /diag now exposes the gateway health, uptime and last stall over HTTP.
+- Server-side shutdown daemon (see section 7): it now answers BEFORE acting
+  (the reply used to be lost while the machine suspended or powered off),
+  retries the bind at boot, and forces the power-off when a shutdown
+  inhibitor would otherwise keep the machine running.
+
+v1.8.2 - Evidence-based readiness gate (2026-10-15)
+--------------------------------------------
+- The gateway never waits a fixed amount of time before forwarding a client
+  to the server: a background task probes the real destination and publishes
+  a latch as soon as it answers (1 s cadence while somebody waits).
+- The server can announce its own readiness to the gateway
+  (GET /notify/ready, and /notify/unready when the public path stops
+  serving). A systemd unit is included under tools/.
+- New /schedule endpoint for the daily wake/off program.
+
+v1.8.1 - Auto-WOL resilience (2026-10-14)
+--------------------------------------------
+- Firmware-side wake retries, verified redirection and a cold-boot gate.
+- Decoupled the blocking sockets from the single-threaded web server.
+- Protection against a reload storm from the waiting splash page.
+
 v1.8.0 - Initial Public Release (2026-09-13)
 -------------------------------------------
 - System Health Supervisor:

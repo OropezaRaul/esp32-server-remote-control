@@ -14,6 +14,7 @@
 
 #include "state.h"
 #include "server_client.h"
+#include "power_off.h"
 #include "telegram.h"
 #include "wol.h"
 #include "system_health.h"
@@ -265,8 +266,16 @@ void automation_kick(void) {
     g_last_interaction_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     ESP_LOGD(TAG, "kick — last_interaction_ms=%u", (unsigned)g_last_interaction_ms);
 
-    if (g_off_cycle_active) {
-        ESP_LOGI(TAG, "kick received while off-cycle active -> cancelling off-cycle");
+    // Un kick cancela el ciclo de auto-off SOLO si el servidor esta ENCENDIDO:
+    // ahi el kick significa "hay alguien usando el negocio".
+    //
+    // Si el servidor esta en S3 (suspendido), el kick no viene de un usuario:
+    // viene del portal del ESP32 (el splash consulta /diag cada 1-2 s) o de un
+    // comando de Telegram. Cancelar el ciclo en ese caso dejaba al servidor
+    // SUSPENDIDO PARA SIEMPRE (con su Tailscale caida por el S3) y jamas se
+    // apagaba de verdad: era exactamente el sintoma reportado.
+    if (g_off_cycle_active && state_get() == SERVER_STATE_ON) {
+        ESP_LOGI(TAG, "kick received while off-cycle active (server ON) -> cancelling off-cycle");
         cycle_clear();
     }
 
@@ -489,11 +498,19 @@ static void automation_task(void *arg) {
             }
         } else {
             // SERVER_STATE_SUSPEND (o OFF con ciclo activo tras degradacion)
-            if (!in_off_cycle && st == SERVER_STATE_OFF) continue;  // OFF real
+            //
+            // "OFF con rastro de suspension" = el servidor esta en S3 y el poll
+            // ya lo degrado a OFF (a los 5 min sin respuesta). Para el
+            // apagado es lo mismo que SUSPEND: hay que despertarlo con WOL
+            // antes de poder mandarle /off. Sin esto, un /off contestaba
+            // "already off" y el servidor se quedaba encendido para siempre.
+            bool like_suspend = (st == SERVER_STATE_SUSPEND) ||
+                                (st == SERVER_STATE_OFF && state_suspect_suspended());
+            if (!in_off_cycle && !like_suspend) continue;  // OFF real
 
             // Estado SUSPEND observado sin ciclo propio (p.ej. /suspend manual
             // por Telegram): adoptarlo como ciclo de auto-off.
-            if (!in_off_cycle && st == SERVER_STATE_SUSPEND && g_cfg.off_after_min > 0) {
+            if (!in_off_cycle && like_suspend && g_cfg.off_after_min > 0) {
                 ESP_LOGI(TAG, "adopting observed SUSPEND as off-cycle");
                 g_off_cycle_active = true;
                 g_off_deadline_unix = (uint32_t)time(NULL)
@@ -558,35 +575,26 @@ static void automation_task(void *arg) {
 
             // server in S3 has NIC down, so /off can't reach it.
             // ACPI doesn't allow S3->S5 directly; we have to go S3 -> S0 (WOL)
-            // -> S5 (/off). Same dance as the manual /off handler.
-            ESP_LOGI(TAG, "ACTION: WOL to wake server from S3 before /off");
-            esp_err_t wres = wol_send_default();
-            if (wres != ESP_OK) {
-                g_off_last_failure_ms = now_ms;
-                g_off_failure_count++;
-                ESP_LOGW(TAG, "ACTION: WOL send failed (%s), backoff %u",
-                         esp_err_to_name(wres), (unsigned)g_off_failure_count);
-                char em[160];
+            // -> S5 (/off). Toda la secuencia vive en power_off.c (la misma
+            // que usa el /off de Telegram): decide con datos reales, espera
+            // con latidos (para que el supervisor de salud no reinicie el
+            // ESP32 por una espera larga) y verifica el apagado por sonda
+            // cuando la respuesta HTTP se pierde al apagar.
+            ESP_LOGI(TAG, "ACTION: secuencia de apagado (WOL si hace falta + /off)");
+            power_off_report_t rep;
+            power_off_run("automation", HEALTH_CHANNEL_AUTOMATION, &rep);
+            if (rep.result == POWER_OFF_RESULT_OK ||
+                rep.result == POWER_OFF_RESULT_ALREADY_OFF) {
+                ESP_LOGI(TAG, "ACTION: apagado confirmado (%s)", rep.detail);
+                g_off_last_failure_ms = 0;
+                g_off_failure_count  = 0;
+                cycle_clear();
+                state_set(SERVER_STATE_OFF);
+                char em[220];
                 snprintf(em, sizeof(em),
-                    "Automation: WOL failed (%s). Retrying in %u min (attempt %u).",
-                    esp_err_to_name(wres),
-                    (unsigned)(OFF_BACKOFF_BASE_S / 60),
-                    (unsigned)g_off_failure_count);
+                    "Automation: server apagado (%s).", rep.detail);
                 notify_authorized(em);
-                continue;
-            }
-            state_mark_known_on();
-            // Wait for server to come back. S3 resume is fast (~5-10s),
-            // but BIOS + userspace can take up to 60s.
-            bool came_up = false;
-            for (int i = 0; i < 30; i++) {
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                if (server_tcp_alive(2000)) {
-                    came_up = true;
-                    break;
-                }
-            }
-            if (!came_up) {
+            } else {
                 g_off_last_failure_ms = now_ms;
                 g_off_failure_count++;
                 uint32_t backoff_s = OFF_BACKOFF_BASE_S;
@@ -594,38 +602,13 @@ static void automation_task(void *arg) {
                     backoff_s *= OFF_BACKOFF_FACTOR;
                 }
                 if (backoff_s > (uint32_t)OFF_BACKOFF_MAX_S) backoff_s = OFF_BACKOFF_MAX_S;
-                ESP_LOGW(TAG,
-                    "ACTION: WOL sent but server didn't come back in 60s "
-                    "(attempt %u). Backoff %u s.",
-                    (unsigned)g_off_failure_count, (unsigned)backoff_s);
-                char em[200];
+                ESP_LOGW(TAG, "ACTION: apagado NO confirmado (%s), backoff %u s",
+                         rep.detail, (unsigned)backoff_s);
+                char em[240];
                 snprintf(em, sizeof(em),
-                    "Automation: server didn't wake from S3 after WOL (attempt %u). "
-                    "Retrying in %u min. Check BIOS WOL if persistent.",
-                    (unsigned)g_off_failure_count,
-                    (unsigned)(backoff_s / 60));
-                notify_authorized(em);
-                continue;
-            }
-            ESP_LOGI(TAG, "ACTION: server back in S0, sending /off");
-
-            esp_err_t ores = server_send_off();
-            if (ores == ESP_OK) {
-                ESP_LOGI(TAG, "ACTION: /off OK, state -> OFF, backoff counter cleared");
-                g_off_last_failure_ms = 0;
-                g_off_failure_count  = 0;
-                cycle_clear();
-                state_set(SERVER_STATE_OFF);
-            } else {
-                g_off_last_failure_ms = now_ms;
-                g_off_failure_count++;
-                ESP_LOGW(TAG, "ACTION: /off failed (%s), backoff %u",
-                         esp_err_to_name(ores), (unsigned)g_off_failure_count);
-                char em[160];
-                snprintf(em, sizeof(em),
-                    "Automation: /off failed after waking server (%s). Retrying in %u min.",
-                    esp_err_to_name(ores),
-                    (unsigned)(OFF_BACKOFF_BASE_S / 60));
+                    "Automation: no se pudo confirmar el apagado de server (%s). "
+                    "Reintento en %u min.",
+                    rep.detail, (unsigned)(backoff_s / 60));
                 notify_authorized(em);
             }
         }

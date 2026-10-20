@@ -57,6 +57,29 @@ uint32_t state_http_stats(uint32_t *attempts, uint32_t *ok, uint32_t *err, int32
 
 void state_set(server_state_t s);
 void state_mark_known_on(void);
+
+// ─── Rastro de suspensión (clave para apagar de verdad un S3) ───
+//
+// El estado del servidor se degrada de SUSPEND a OFF a los 5 min sin
+// respuesta (LAST_ON_HEURISTIC_MS). Cuando eso pasa, el /off de Telegram
+// contestaba "OK: server already off." SIN enviar nada, y el servidor se
+// quedaba suspendido para siempre (con su Tailscale caido por el S3, que es
+// exactamente lo que reportaba el usuario).
+//
+// Este flag recuerda que el equipo estaba en S3 (o que el estado se degradó
+// desde SUSPEND) y que por lo tanto hay que despertarlo con WOL antes de
+// poder mandarle /off. Se persiste en NVS para sobrevivir al auto-reboot
+// horario del ESP32.
+bool state_suspect_suspended(void);
+// Marca explícitamente que acabamos de suspender el servidor (el daemon
+// responde despues de suspender, asi que el estado real se conoce antes que
+// el poll).
+void state_mark_suspended(void);
+// El servidor quedo APAGADO de verdad (S5): no hay nada que despertar, asi
+// que el rastro de suspension se limpia. Sin esto, un /off posterior creeria
+// que sigue en S3 y lo despertaria (arrancando el stack entero) para volver a
+// apagarlo.
+void state_clear_suspect_suspended(void);
 // Activa temporalmente el modo de sondeo rápido (cada 2.5s en vez de 30s)
 // tras disparar un encendido (WOL) para acelerar la redirección en cuanto
 // el servidor esté listo.

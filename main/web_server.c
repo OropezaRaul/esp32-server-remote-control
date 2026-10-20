@@ -8,6 +8,7 @@
 #include "ml_cert.h"
 #endif
 #include <esp_netif.h>
+#include <esp_timer.h>
 #include <cJSON.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,6 +25,8 @@
 #include "microlink_wrapper.h"
 #include "microlink_watchdog.h"
 #include "portmap.h"
+#include "power_off.h"
+#include "auto_reboot.h"
 #include "version.h"
 
 #include "sdkconfig.h"
@@ -900,6 +903,18 @@ static esp_err_t handle_diag(httpd_req_t *req) {
         cJSON_AddStringToObject(root, "wake_status", ws.text);
     }
 
+    // Secuencia de apagado (power_off.c) + rastro de suspension.
+    // El rastro es lo que permite distinguir "apagado de verdad" de
+    // "suspendido en S3 (y por lo tanto hay que despertarlo antes de
+    // apagarlo)": sin el, un /off sobre un S3 contestaba "already off".
+    {
+        char po[POWER_OFF_STATUS_BUF_SIZE];
+        power_off_status_str(po, sizeof(po));
+        cJSON_AddStringToObject(root, "power_off_status", po);
+    }
+    cJSON_AddBoolToObject(root, "server_suspect_suspended",
+                          state_suspect_suspended());
+
     // Network
     cJSON_AddStringToObject(root, "client_ip", peer_ip ? peer_ip : "unknown");
     cJSON_AddBoolToObject(root, "client_is_lan", gate_is_lan_peer(peer_ip));
@@ -935,6 +950,30 @@ static esp_err_t handle_diag(httpd_req_t *req) {
                             wd.last_recovery_target_s);
     cJSON_AddNumberToObject(root, "tailscale_watchdog_last_rebind_ms_ago",
                             wd.last_rebind_ms_ago);
+
+    // Salud del propio ESP32: uptime, latidos de cada canal y el ultimo
+    // cuelgue detectado por el supervisor. Antes esto solo se veia por
+    // Telegram (/diag), y sin el logs del ESP32 no se podia saber si un
+    // reinicio habia sido por el watchdog de salud.
+    cJSON_AddNumberToObject(root, "esp_uptime_s", (uint32_t)(esp_timer_get_time() / 1000000ULL));
+    cJSON_AddNumberToObject(root, "auto_reboot_min", auto_reboot_get_interval_min());
+    cJSON_AddNumberToObject(root, "auto_reboot_remaining_s", auto_reboot_seconds_remaining());
+    {
+        char hbuf[512];
+        system_health_format_status(hbuf, sizeof(hbuf));
+        cJSON_AddStringToObject(root, "health", hbuf);
+    }
+    {
+        health_crash_report_t cr;
+        if (system_health_check_crash_report(&cr, false)) {
+            cJSON_AddStringToObject(root, "last_crash_task", cr.failing_task);
+            cJSON_AddStringToObject(root, "last_crash_reason", cr.reason);
+            cJSON_AddNumberToObject(root, "last_crash_prev_uptime_s", cr.prev_uptime_s);
+            cJSON_AddNumberToObject(root, "crash_count", cr.reset_count);
+        } else {
+            cJSON_AddBoolToObject(root, "has_crash", false);
+        }
+    }
 
     // Memory
     cJSON_AddNumberToObject(root, "heap_free", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

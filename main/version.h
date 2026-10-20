@@ -10,4 +10,4 @@
 // siempre refleja el código compilado; nada que sincronizar.
 //
 // Al bumppear: editar SOLO la línea de abajo y recompilar.
-#define FIRMWARE_VERSION "1.8.2-kiubart-routing"
+#define FIRMWARE_VERSION "1.8.3-poweroff-cycle"

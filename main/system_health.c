@@ -108,6 +108,10 @@ static channel_desc_t s_channels[HEALTH_CHANNEL_COUNT] = {
     [HEALTH_CHANNEL_STATE]       = { .name = "state_poll",     .max_interval_ms = 90000, .last_heartbeat_ms = 0, .enabled = false },
     [HEALTH_CHANNEL_TELEGRAM]    = { .name = "telegram_poll",  .max_interval_ms = 90000, .last_heartbeat_ms = 0, .enabled = false },
     [HEALTH_CHANNEL_AUTO_REBOOT] = { .name = "auto_reboot",    .max_interval_ms = 60000, .last_heartbeat_ms = 0, .enabled = false },
+    // La secuencia de apagado puede tardar hasta ~100 s (WOL + espera + /off):
+    // el limite es holgado para que el supervisor reinicie el ESP32 solo si la
+    // task se cuelga de verdad. La task desactiva el canal al terminar.
+    [HEALTH_CHANNEL_POWER_OFF]   = { .name = "power_off",      .max_interval_ms = 200000, .last_heartbeat_ms = 0, .enabled = false },
 };
 
 static esp_task_wdt_user_handle_t s_twdt_user = NULL;

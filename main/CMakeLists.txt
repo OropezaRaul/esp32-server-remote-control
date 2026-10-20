@@ -25,6 +25,8 @@ idf_component_register(
         "wd_logic.c"
         "automation.c"
         "scheduler.c"
+        "power_off.c"
+        "power_off_logic.c"
         "auto_reboot.c"
         "proxy.c"
         "portmap.c"

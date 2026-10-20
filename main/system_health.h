@@ -23,6 +23,7 @@ typedef enum {
     HEALTH_CHANNEL_STATE,         // state_poll_task (sondeo server)
     HEALTH_CHANNEL_TELEGRAM,      // telegram_poll_task (long-poll Telegram)
     HEALTH_CHANNEL_AUTO_REBOOT,   // auto_reboot_task (temporizador de reboot)
+    HEALTH_CHANNEL_POWER_OFF,     // power_off (secuencia WOL + /off en background)
     HEALTH_CHANNEL_COUNT
 } health_channel_t;
 

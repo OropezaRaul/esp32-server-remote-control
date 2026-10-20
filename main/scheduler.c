@@ -11,6 +11,7 @@
 
 #include "state.h"
 #include "server_client.h"
+#include "power_off.h"
 #include "telegram.h"
 #include "wol.h"
 #include "wake.h"
@@ -169,51 +170,24 @@ static void fire_wake(void) {
 }
 
 static void fire_off(void) {
-    if (server_tcp_alive(2000)) {
-        if (server_send_off() == ESP_OK) {
-            state_set(SERVER_STATE_OFF);
-            ESP_LOGI(TAG, "off programado: /off OK");
-            telegram_broadcast("Scheduler: off programado ejecutado — server OFF.");
-        } else {
-            ESP_LOGW(TAG, "off programado: POST /off rechazado");
-            telegram_broadcast("Scheduler: off programado FALLÓ (server rechazó /off).");
-        }
-        return;
+    // Secuencia unica compartida con telegram.c y automation.c: decide si
+    // hace falta WOL (S3) o no, manda /off y verifica el resultado por sonda.
+    power_off_report_t rep;
+    power_off_run("scheduler", HEALTH_CHANNEL_SCHEDULER, &rep);
+    switch (rep.result) {
+        case POWER_OFF_RESULT_OK:
+            ESP_LOGI(TAG, "off programado: apagado confirmado (%s)", rep.detail);
+            telegram_broadcast("Scheduler: off programado ejecutado - server OFF.");
+            break;
+        case POWER_OFF_RESULT_ALREADY_OFF:
+            ESP_LOGI(TAG, "off programado: server no respondio (%s)", rep.detail);
+            telegram_broadcast("Scheduler: off programado - server no respondio, se asume OFF.");
+            break;
+        default:
+            ESP_LOGW(TAG, "off programado: NO confirmado (%s)", rep.detail);
+            telegram_broadcast("Scheduler: off programado FALLO (no se pudo confirmar el apagado).");
+            break;
     }
-
-    // En S3 la NIC está caída: ACPI no permite S3→S5 directo, hay que
-    // despertar a S0 con WOL y recién ahí mandar /off. Mismo baile que el
-    // /off manual (telegram.c) y que automation.c.
-    if (state_get() == SERVER_STATE_SUSPEND) {
-        ESP_LOGI(TAG, "off programado: server en S3 — WOL para poder apagar");
-        if (wol_send_default() != ESP_OK) {
-            telegram_broadcast("Scheduler: off programado FALLÓ (no se pudo enviar WOL).");
-            return;
-        }
-        state_mark_known_on();
-        bool came_up = false;
-        for (int i = 0; i < 30; i++) {  // hasta 60s: BIOS+userspace pueden tardar
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            if (server_tcp_alive(2000)) { came_up = true; break; }
-        }
-        if (!came_up) {
-            ESP_LOGW(TAG, "off programado: server no volvió tras WOL en 60s");
-            telegram_broadcast("Scheduler: off programado omitido (server no despertó tras WOL).");
-            return;
-        }
-        if (server_send_off() == ESP_OK) {
-            state_set(SERVER_STATE_OFF);
-            ESP_LOGI(TAG, "off programado: S3→S0→S5 completo");
-            telegram_broadcast("Scheduler: off programado — server despertado de S3 y apagado.");
-        } else {
-            telegram_broadcast("Scheduler: off programado FALLÓ (rechazó /off tras despertar).");
-        }
-        return;
-    }
-
-    // OFF o UNKNOWN sin TCP: no hay nada que apagar (o no accesible).
-    ESP_LOGI(TAG, "off programado: server no accesible — skip");
-    telegram_broadcast("Scheduler: hora de off — server no accesible (ya apagado?), nada que hacer.");
 }
 
 // ─── Task ─────────────────────────────────────────────────────

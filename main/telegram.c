@@ -27,6 +27,8 @@
 #include "portmap.h"
 #include "microlink_wrapper.h"
 #include "microlink_watchdog.h"
+#include "power_off.h"
+#include "power_off_logic.h"
 #include "version.h"
 #include "system_health.h"
 #include <esp_psram.h>
@@ -464,67 +466,68 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
                  wifi_is_connected() ? "connected" : "down");
         telegram_send_text(chat_id, buf);
 } else if (cmd_len == 3 && strncmp(cmd, "off", 3) == 0) {
-    server_state_t cur = state_get();
-    if (cur == SERVER_STATE_SUSPEND) {
-        // server is in S3; the NIC is down so /off would fail to
-        // reach it. ACPI doesn't allow S3 -> S5 directly, so we have
-        // to go S3 -> S0 (via WOL) -> S5. Do the whole sequence in one
-        // /off invocation so the user only has to type one command.
-        telegram_send_text(chat_id, "server is in S3. Waking...");
-        if (wake_request("telegram /off desde S3") != ESP_OK) {
-            telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
+    // Toda la secuencia de apagado vive en power_off.c (una sola implementacion
+    // compartida con automation.c y scheduler.c). Antes cada uno la escribia por
+    // su cuenta y los tres tenian los mismos dos defectos:
+    //   * si server no respondia, contestaban "OK: assuming off" SIN mandar
+    //     nada -> el servidor se quedaba suspendido (Tailscale caida) para
+    //     siempre, que es lo que reportaba el usuario;
+    //   * el camino S3 -> S0 -> S5 bloqueaba esta tarea hasta ~90 s, mas que
+    //     el limite de latido de 90 s del supervisor de salud: el ESP32 se
+    //     reiniciaba en mitad del apagado y el bot quedaba mudo.
+    //
+    // Si hay rastro de que esta en S3, la secuencia va en background (tarda
+    // hasta ~90 s en despertar) para que el bot siga respondiendo.
+    bool alive = server_tcp_alive(1200);
+    if (power_off_decide(alive, state_suspect_suspended()) ==
+        POWER_OFF_DECISION_WAKE_THEN_OFF) {
+        esp_err_t aerr = power_off_start_async("telegram /off", chat_id);
+        if (aerr != ESP_OK) {
+            telegram_send_text(chat_id, "ERR: no se pudo iniciar la secuencia de apagado (ya hay una en curso?).");
             return;
         }
-        // Wait for server to come back online. Resume from S3 is fast
-        // (~5-10s) but allow up to 60s for BIOS + userspace.
-        bool came_up = false;
-        for (int i = 0; i < 30; i++) {
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            if (server_tcp_alive(2000)) {
-                came_up = true;
-                break;
-            }
-        }
-        if (!came_up) {
-            state_set(SERVER_STATE_OFF);
-            telegram_send_text(chat_id, "WARN: server did not respond within 60s after WOL. Assuming already OFF.");
-            return;
-        }
-        // server is now in S0; send the shutdown command.
-        if (server_send_off() == ESP_OK) {
-            state_set(SERVER_STATE_OFF);
-            telegram_send_text(chat_id, "OK: woken from S3 and shutdown sent.");
-        } else {
-            telegram_send_text(chat_id, "ERR: server came back online but refused /off.");
-        }
+        telegram_send_text(chat_id,
+            "server no responde (esta en S3). Lo despierto y lo apago; "
+            "te aviso en cuanto termine.");
         return;
     }
-    if (server_tcp_alive(2000)) {
-        if (server_send_off() == ESP_OK) {
-            state_set(SERVER_STATE_OFF);
+
+    // Camino rapido: el servidor responde (o ya esta apagado de verdad).
+    power_off_report_t rep;
+    power_off_run("telegram /off", HEALTH_CHANNEL_TELEGRAM, &rep);
+    switch (rep.result) {
+        case POWER_OFF_RESULT_OK:
             telegram_send_text(chat_id, "OK: server shutdown sent.");
-        } else {
-            telegram_send_text(chat_id, "ERR: server reachable but refused shutdown.");
-        }
-    } else {
-        // TCP not alive AND state is not SUSPEND (we handled that above),
-        // so server is genuinely OFF or state is UNKNOWN. Trust the
-        // recent polling result; don't flip to OFF blindly.
-        if (cur == SERVER_STATE_OFF) {
-            telegram_send_text(chat_id, "OK: server already off.");
-        } else {
-            telegram_send_text(chat_id, "OK: server not reachable (state UNKNOWN); assuming off.");
-            state_set(SERVER_STATE_OFF);
-        }
+            break;
+        case POWER_OFF_RESULT_ALREADY_OFF:
+            telegram_send_text(chat_id,
+                "OK: server no responde y no hay rastro de suspension: ya esta apagado.");
+            break;
+        default:
+            telegram_send_text(chat_id,
+                "ERR: no se pudo confirmar el apagado. El daemon de server "
+                "puede no estar corriendo (puerto 9999).");
+            break;
     }
     } else if (cmd_len == 7 && strncmp(cmd, "suspend", 7) == 0) {
-        if (!server_tcp_alive(2000)) {
+        if (!server_tcp_alive(1200)) {
             telegram_send_text(chat_id, "ERR: server not reachable. /suspend requires the host to be ON.");
             return;
         }
-        if (server_send_suspend() == ESP_OK) {
+        esp_err_t sres = server_send_suspend();
+        if (sres == ESP_OK) {
             state_set(SERVER_STATE_SUSPEND);
+            state_mark_suspended();
             telegram_send_text(chat_id, "OK: server suspend sent.");
+        } else if (power_off_wait_until_down(6000, HEALTH_CHANNEL_TELEGRAM)) {
+            // El daemon suspende la maquina ANTES de responder, asi que la
+            // respuesta HTTP se pierde casi siempre. Si :22 deja de
+            // responder, el suspend funciono: se confirma por sonda.
+            state_set(SERVER_STATE_SUSPEND);
+            state_mark_suspended();
+            telegram_send_text(chat_id,
+                "OK: server suspendido (confirmado por sonda; la respuesta "
+                "HTTP se perdio al suspender).");
         } else {
             telegram_send_text(chat_id, "ERR: server reachable but refused suspend.");
         }
