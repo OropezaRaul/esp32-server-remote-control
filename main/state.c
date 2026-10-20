@@ -15,6 +15,7 @@
 
 #include "server_client.h"
 #include "automation.h"
+#include "power_event.h"
 #include "system_health.h"
 
 #include "sdkconfig.h"
@@ -303,6 +304,9 @@ void state_set(server_state_t s) {
     // que alguien prendió o despertó el servidor → resetear timer de inactividad.
     if (s == SERVER_STATE_ON && prev != SERVER_STATE_ON) {
         automation_kick();
+        // El servidor volvio a responder: el vigilante de cortes lo necesita
+        // para saber que puede dejar de esperar.
+        power_event_note_server_on();
     }
 
     // Rastro de suspensión:

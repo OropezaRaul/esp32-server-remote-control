@@ -459,6 +459,26 @@ v1.8.3 - Power-off cycle (2026-10-20)
   retries the bind at boot, and forces the power-off when a shutdown
   inhibitor would otherwise keep the machine running.
 
+v1.8.4 - Power-cut detection and automatic recovery (2026-10-20)
+--------------------------------------------
+- The gateway watches its OWN connectivity: when the network drops for more than
+  20 s and comes back while the server was supposed to be running, it treats
+  it as a power cut (the gateway and the server share the same installation).
+- On a detected cut it brings the server back on its own: the wake supervisor is
+  re-armed every 2 minutes (each episode bursts magic packets every 10 s for 4
+  minutes) instead of a single burst that can be lost while the router and the
+  NIC are still settling.
+- If the server does not come back after 15 attempts (~30 min), the gateway
+  gives up and says so over Telegram, with the three BIOS settings that make a
+  machine boot by itself when the mains returns (AC BACK = Always On, ErP =
+  Disabled, Power On By PME/PCI-E = Enabled).
+- A server that was switched off on purpose is never woken up: the gateway
+  forgets about it as soon as it has given up.
+- POST /diag/outage (private port only) simulates a network outage so the whole
+  path can be tested without cutting the power.
+- /diag now also reports the gateway health, its uptime, the last stall and the
+  state of the power-cut watcher.
+
 v1.8.2 - Evidence-based readiness gate (2026-10-15)
 --------------------------------------------
 - The gateway never waits a fixed amount of time before forwarding a client

@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "server_client.h"
+#include "power_event.h"
 #include "power_off_logic.h"
 #include "state.h"
 #include "system_health.h"
@@ -189,6 +190,9 @@ done:
         // se limpia. Si se dejara, un /off posterior creeria que sigue en S3
         // y lo despertaria (arrancando todo el stack) para volver a apagarlo.
         state_clear_suspect_suspended();
+        // Apagado DELIBERADO: el vigilante de cortes no debe intentar
+        // devolverlo a la vida si despues hay un corte de luz.
+        power_event_note_intentional_off();
     }
     if (rep != NULL) *rep = local;
     save_report(&local);

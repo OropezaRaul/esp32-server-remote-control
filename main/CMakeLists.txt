@@ -27,6 +27,8 @@ idf_component_register(
         "scheduler.c"
         "power_off.c"
         "power_off_logic.c"
+        "power_event.c"
+        "power_event_logic.c"
         "auto_reboot.c"
         "proxy.c"
         "portmap.c"

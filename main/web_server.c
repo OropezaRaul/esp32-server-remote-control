@@ -26,6 +26,7 @@
 #include "microlink_watchdog.h"
 #include "portmap.h"
 #include "power_off.h"
+#include "power_event.h"
 #include "auto_reboot.h"
 #include "version.h"
 
@@ -915,6 +916,13 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     cJSON_AddBoolToObject(root, "server_suspect_suspended",
                           state_suspect_suspended());
 
+    // Vigilante de cortes: fase, intentos y si ya aviso.
+    {
+        char pe[192];
+        power_event_status_str(pe, sizeof(pe));
+        cJSON_AddStringToObject(root, "power_event_status", pe);
+    }
+
     // Network
     cJSON_AddStringToObject(root, "client_ip", peer_ip ? peer_ip : "unknown");
     cJSON_AddBoolToObject(root, "client_is_lan", gate_is_lan_peer(peer_ip));
@@ -1003,6 +1011,10 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Handler del simulador de corte (definido mas abajo, junto al resto de
+// los handlers privados).
+static esp_err_t handle_diag_outage(httpd_req_t *req);
+
 // ─── URI tables ──────────────────────────────────────────────────────────────
 
 
@@ -1042,9 +1054,50 @@ static const httpd_uri_t s_uris_private[] = {
       { .uri = "/notify/ready", .method = HTTP_GET,  .handler = handle_notify_ready },
       { .uri = "/notify/unready", .method = HTTP_GET,  .handler = handle_notify_unready },
     { .uri = "/autoset",       .method = HTTP_POST,   .handler = handle_autoset },
+    { .uri = "/diag/outage",   .method = HTTP_POST,   .handler = handle_diag_outage },
     { .uri = "/schedule",      .method = HTTP_POST,   .handler = handle_schedule },
 };
 #endif
+
+
+
+
+
+
+
+
+static esp_err_t handle_diag_outage(httpd_req_t *req) {
+    uint32_t seconds = 30;
+    if (req->content_len > 0 && req->content_len <= 256) {
+        char *body = malloc(req->content_len + 1);
+        if (body != NULL) {
+            int total = 0;
+            while (total < req->content_len) {
+                int n = httpd_req_recv(req, body + total, req->content_len - total);
+                if (n <= 0) break;
+                total += n;
+            }
+            body[total] = 0;
+            cJSON *doc = cJSON_Parse(body);
+            if (doc != NULL) {
+                const cJSON *s = cJSON_GetObjectItemCaseSensitive(doc, "seconds");
+                if (cJSON_IsNumber(s) && s->valueint >= 5 && s->valueint <= 3600) {
+                    seconds = (uint32_t)s->valueint;
+                }
+                cJSON_Delete(doc);
+            }
+            free(body);
+        }
+    }
+    power_event_simulate_outage(seconds);
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "Simulando corte de red de %u s. La escalada de encendido y el "
+             "aviso por Telegram se disparan solos.\n", (unsigned)seconds);
+    send_text(req, "200 OK", msg);
+    ESP_LOGW(TAG, "outage simulado de %u s por peticion HTTP", (unsigned)seconds);
+    return ESP_OK;
+}
 
 static esp_err_t register_uris_public(httpd_handle_t server, const char *label) {
     for (size_t i = 0; i < sizeof(s_uris_public) / sizeof(s_uris_public[0]); i++) {
@@ -1086,7 +1139,10 @@ esp_err_t web_server_start(void) {
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;  
-    config.max_uri_handlers = 20;
+    // 20 handlers llenaban el cupo (12 publicos + 8 privados) y el siguiente
+    // registro fallaba con ESP_ERR_HTTPD_HANDLERS_FULL: el servidor HTTP no
+    // arrancaba y no se veia nada (ni el portal ni /diag). Con 24 hay margen.
+    config.max_uri_handlers = 24;
 
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) {
@@ -1123,7 +1179,10 @@ esp_err_t web_server_funnel_start(void) {
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;  
-    config.max_uri_handlers = 20;
+    // 20 handlers llenaban el cupo (12 publicos + 8 privados) y el siguiente
+    // registro fallaba con ESP_ERR_HTTPD_HANDLERS_FULL: el servidor HTTP no
+    // arrancaba y no se veia nada (ni el portal ni /diag). Con 24 hay margen.
+    config.max_uri_handlers = 24;
 
     esp_err_t err = httpd_start(&s_server_funnel, &config);
     if (err != ESP_OK) {

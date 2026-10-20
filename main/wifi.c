@@ -10,6 +10,7 @@
 #include <freertos/task.h>
 #include <string.h>
 
+#include "power_event.h"
 #include "system_health.h"
 #include "sdkconfig.h"
 
@@ -81,6 +82,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
 
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        // La caida del WiFi es la senal de "posible corte": si el router/AP
+        // tambien se quedo sin luz, el ESP32 se cae con el. El vigilante de
+        // cortes (power_event.c) lo usa para decidir si hay que encender el
+        // servidor al volver la red.
+        power_event_note_net_down();
         if (event_data != NULL) {
             wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)event_data;
             ESP_LOGW(TAG, "WiFi DISCONNECTED (reason=%d) — keepalive reconnecting...",
@@ -92,6 +98,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        // La red volvio: si hubo corte, el vigilante arranca la escalada para
+        // devolver el servidor a la vida.
+        power_event_note_net_up();
         if (esp_sntp_enabled()) {
             ESP_LOGI(TAG, "restarting SNTP for immediate clock sync");
             esp_sntp_restart();

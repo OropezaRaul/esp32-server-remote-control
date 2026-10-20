@@ -30,6 +30,7 @@
 #include "scheduler.h"
 #include "auto_reboot.h"
 #include "portmap.h"
+#include "power_event.h"
 #include "system_health.h"
 #include "version.h"
 
@@ -394,6 +395,15 @@ void app_main(void) {
         esp_err_t pm_err = portmap_init();
         if (pm_err != ESP_OK) {
             ESP_LOGE(TAG, "portmap_init failed: %s", esp_err_to_name(pm_err));
+        }
+
+        // Vigilante de cortes (power_event.c): detecta la caida de red (que
+        // en esta instalacion es la senal de corte de luz) y, si el servidor
+        // deberia estar encendido, lo devuelve a la vida con reintentos y
+        // avisa por Telegram cuando no vuelve.
+        esp_err_t pe_err = power_event_init();
+        if (pe_err != ESP_OK) {
+            ESP_LOGE(TAG, "power_event_init failed: %s", esp_err_to_name(pe_err));
         }
     }
 
