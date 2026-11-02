@@ -52,18 +52,18 @@ void wireguard_tai64n_now(uint8_t *output) {
     output[11] = nanoseconds & 0xFF;
 }
 
-/* ============================================================================
- * Random Number Generation
- * ========================================================================== */
+
+
+
 
 void wireguard_random_bytes(void *bytes, size_t size) {
     // Use ESP32 hardware RNG
     esp_fill_random(bytes, size);
 }
 
-/* ============================================================================
- * Load Management
- * ========================================================================== */
+
+
+
 
 bool wireguard_is_under_load() {
     // For now, always return false (not under load)

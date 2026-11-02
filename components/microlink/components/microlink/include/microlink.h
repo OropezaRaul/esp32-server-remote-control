@@ -63,6 +63,18 @@ typedef struct {
 
 
     uint16_t peerapi_port;
+
+    
+
+
+
+
+
+
+
+
+
+    uint16_t peerapi6_port;
 } microlink_config_t;
 
 
@@ -139,6 +151,34 @@ esp_err_t microlink_start(microlink_t *ml);
 
 
 esp_err_t microlink_rebind(microlink_t *ml);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+esp_err_t microlink_set_funnel_enabled(microlink_t *ml, bool enabled);
+
+
+
+
+bool microlink_get_funnel_enabled(microlink_t *ml);
+
+
+
+
+esp_err_t microlink_request_endpoint_update(microlink_t *ml);
 
 
 

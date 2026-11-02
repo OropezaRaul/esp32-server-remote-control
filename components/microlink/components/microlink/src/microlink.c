@@ -179,6 +179,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     ml->config.enable_derp = true;  
 
     ml->state = ML_STATE_IDLE;
+    ml->funnel_active = ml->config.enable_funnel;
     ml->coord_sock = -1;
     ml->disco_sock4 = -1;
     ml->disco_sock6 = -1;
@@ -416,7 +417,11 @@ skip_bsd_socket:
 
 
     if (ml->config.enable_funnel && ml->config.peerapi_port != 0) {
-        if (ml_peerapi_start(ml->config.peerapi_port) != ESP_OK) {
+        
+
+        uint16_t peerapi_listen_port = ml->config.peerapi6_port ? ml->config.peerapi6_port
+                                                               : ml->config.peerapi_port;
+        if (ml_peerapi_start(peerapi_listen_port, peerapi_listen_port) != ESP_OK) {
             ESP_LOGW(TAG, "ml_peerapi_start :%u failed (Services still advertised)",
                      (unsigned)ml->config.peerapi_port);
         }
@@ -513,6 +518,57 @@ rebind_wg_update:
     ml_wg_mgr_update_transport(ml);
 
     ESP_LOGI(TAG, "=== Rebind complete — waiting for coord+DERP reconnect ===");
+    return ESP_OK;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+esp_err_t microlink_set_funnel_enabled(microlink_t *ml, bool enabled) {
+    if (!ml) return ESP_ERR_INVALID_ARG;
+    if (!ml->config.enable_funnel) {
+        ESP_LOGW(TAG, "set_funnel_enabled: el firmware no tiene Funnel habilitado");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (ml->funnel_active == enabled) {
+        ESP_LOGI(TAG, "set_funnel_enabled(%d): sin cambios", enabled ? 1 : 0);
+        return ESP_OK;
+    }
+
+    ml->funnel_active = enabled;
+    ESP_LOGW(TAG, "Funnel %s (Hostinfo.IngressEnabled=%d, WireIngress=%d)",
+             enabled ? "ACTIVADO" : "APAGADO", enabled ? 1 : 0, enabled ? 0 : 1);
+
+    
+    ml_coord_cmd_t cmd = ML_CMD_UPDATE_ENDPOINTS;
+    if (xQueueSend(ml->coord_cmd_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "set_funnel_enabled: no se pudo encolar el MapRequest");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+bool microlink_get_funnel_enabled(microlink_t *ml) {
+    if (!ml) return false;
+    return ml->funnel_active;
+}
+
+esp_err_t microlink_request_endpoint_update(microlink_t *ml) {
+    if (!ml) return ESP_ERR_INVALID_ARG;
+    ml_coord_cmd_t cmd = ML_CMD_UPDATE_ENDPOINTS;
+    if (xQueueSend(ml->coord_cmd_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 

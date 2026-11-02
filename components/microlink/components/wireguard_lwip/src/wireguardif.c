@@ -546,7 +546,7 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 									WG_DEBUG("[WG_RX_IP] DROPPED: src IP not in peer's allowed_source_ips\n");
 								}
 							}
-#endif /* LWIP_IPV4 */
+#endif 
 #if LWIP_IPV6
 							if (IPH_V(iphdr) == 6) {
 								struct ip6_hdr *ip6hdr = (struct ip6_hdr *)pbuf->payload;
@@ -567,7 +567,7 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 									dest_ok = true;
 								}
 							}
-#endif /* LWIP_IPV6 */
+#endif 
 							if (header_len <= pbuf->tot_len) {
 
 								// 5. If the plaintext packet has not been dropped, it is inserted into the receive queue of the wg0 interface.
@@ -1482,6 +1482,9 @@ err_t wireguardif_connect_derp(struct netif *netif, u8_t peer_index) {
 		peer->last_initiation_tx = 0;
 		// Now start handshake immediately
 		wireguard_start_handshake(netif, peer);
+		// Clear active to prevent wireguardif_periodic from entering an infinite retry loop.
+		// If handshake succeeds, response handler establishes session regardless of active flag.
+		peer->active = false;
 		result = ERR_OK;
 	}
 	return result;

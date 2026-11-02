@@ -22,7 +22,7 @@ static const char *TAG = "auto_reboot";
 #ifdef CONFIG_AUTO_REBOOT_INTERVAL_MIN
 #define DEFAULT_INTERVAL_MIN CONFIG_AUTO_REBOOT_INTERVAL_MIN
 #else
-#define DEFAULT_INTERVAL_MIN 60
+#define DEFAULT_INTERVAL_MIN 0
 #endif
 
 #define TASK_STACK_SIZE  4096
@@ -53,7 +53,7 @@ void auto_reboot_trigger(const char *reason, int64_t reply_chat_id) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(400));
-    esp_restart();
+    system_safe_restart(reason);
 }
 
 static esp_err_t load_from_nvs(void) {

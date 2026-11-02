@@ -2,6 +2,7 @@
 
 #include <esp_log.h>
 #include <esp_http_server.h>
+#include "ml_peerapi.h"
 #if CONFIG_ESP_HTTPS_SERVER_ENABLE
 #include <esp_https_server.h>
 #include <mbedtls/x509_crt.h>
@@ -28,6 +29,8 @@
 #include "power_off.h"
 #include "power_event.h"
 #include "auto_reboot.h"
+#include "funnel_ctl.h"
+#include "sockmgr.h"
 #include "version.h"
 
 #include "sdkconfig.h"
@@ -59,12 +62,14 @@ static httpd_handle_t s_server_funnel = NULL;
 static void send_text(httpd_req_t *req, const char *status, const char *body) {
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, body, strlen(body));
 }
 
 static void send_json(httpd_req_t *req, const char *body) {
     httpd_resp_set_status(req, "200 OK");
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, body, strlen(body));
 }
 
@@ -306,17 +311,23 @@ static bool server_verified_alive(server_state_t st, bool cached_tcp) {
     // El servidor dijo que su ruta publica no sirve: ni sonda ni heuristica pueden
     // abrir el gate contra su palabra.
     if (ready_public_broken()) return false;
-    // Evidencia directa y reciente (sonda con 200 real, o aviso de server). Es
-    // MAS fuerte que un connect() a :22: la sonda ya vio al backend contestando, y
-    // con la maquina recien encendida y saturada por Docker un connect() de 250 ms
-    // puede dar falso negativo y costingnos un viaje extra del cliente.
-    if (ready_is_ready()) return true;
-    // Sin evidencia directa (resume desde S3, o el techo de seguridad) si exigimos
-    // un connect() real en el instante del 302: ahi la maquina esta estable y
-    // cuesta 1-3 ms, y es la unica red contra un 302 a un servidor caido.
-    if (state_stack_never_stopped() || state_stack_settled(SERVER_STACK_SETTLE_MS)) {
-        return server_tcp_alive(250);
+
+    // Sonda EN VIVO contra el daemon nativo de server (:9999). Es un
+    // proceso real en la maquina (no docker-proxy) y contesta HTTP 200 de
+    // verdad en ~20 ms cuando el servidor esta ON.
+    //
+    // Si responde AHORA, el servidor esta vivo y el 302 es seguro.
+    // Si NO responde (timeout 400 ms), el servidor se esta apagando, entrando a
+    // suspend S3 o ya murio: invalidamos el latch de readiness de inmediato y
+    // retornamos false. Asi el gate sirve el splash y pide el WOL, evitando
+    // el bug historico donde el latch residual (TTL 60s) devolvia 302 hacia
+    // un servidor apagandose y nadie pedia el WOL.
+    if (server_state_alive_now(400)) {
+        return true;
     }
+
+    ready_invalidate();
+    state_trigger_fast_poll();
     return false;
 }
 
@@ -375,14 +386,14 @@ static esp_err_t send_wake_splash(httpd_req_t *req, const char *target_url, cons
         "function c(){fetch('/ready',{cache:'no-store'}).then(r=>r.json()).then(d=>{"
         "if(d.ready){"
         "document.getElementById('st').innerText='¡Servidor listo! Conectando...';"
-        "setTimeout(()=>{window.location.href=t},250);"
+        "window.location.href=t;"
         "}else{"
         "var e=(d.state==='ON')?'Levantando el sistema del negocio...':"
         "(d.wake_pending?('Despertando servidor... (WOL intento '+d.wake_attempts+')'):'Iniciando servidor...');"
         "document.getElementById('st').innerText=e;"
-        "setTimeout(c,1000)}"
+        "setTimeout(c,1500)}"
         "}).catch(()=>setTimeout(c,1500))}"
-        "setTimeout(c,500);"
+        "setTimeout(c,100);"
         "</script></body></html>",
         title, title, target_url, target_url);
 
@@ -392,6 +403,7 @@ static esp_err_t send_wake_splash(httpd_req_t *req, const char *target_url, cons
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, buf, len);
     free(buf);
     return ESP_OK;
@@ -429,6 +441,7 @@ static esp_err_t handle_gate(httpd_req_t *req) {
     ESP_LOGI(TAG, "gate: alive, direct redirect -> %s", location);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -461,6 +474,7 @@ static esp_err_t handle_monitor(httpd_req_t *req) {
     ESP_LOGI(TAG, "monitor: alive, redirect -> %s", location);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -508,6 +522,7 @@ static esp_err_t handle_app(httpd_req_t *req) {
     ESP_LOGI(TAG, "app: alive, redirect -> %s", loc);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", loc);
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -557,6 +572,7 @@ static esp_err_t handle_kiubart(httpd_req_t *req) {
     ESP_LOGI(TAG, "kiubart: alive, redirect -> %s", loc);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", loc);
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -1000,6 +1016,33 @@ static esp_err_t handle_diag(httpd_req_t *req) {
     }
 #endif
 
+    // Estado del funnel publico: si el anuncio esta activo, si el camino
+    // publico (edge -> tailnet -> PeerAPI -> :443) responde y cuantas
+    // reparaciones automaticas se hicieron.
+    {
+        funnel_ctl_status_t fs;
+        funnel_ctl_get_status(&fs);
+        cJSON_AddBoolToObject(root, "funnel_enabled", fs.enabled);
+        cJSON_AddBoolToObject(root, "funnel_healthy", fs.healthy);
+        cJSON_AddNumberToObject(root, "funnel_checks", fs.checks);
+        cJSON_AddNumberToObject(root, "funnel_failures", fs.failures);
+        cJSON_AddNumberToObject(root, "funnel_repairs", fs.repairs);
+        cJSON_AddNumberToObject(root, "funnel_last_check_ms_ago", fs.last_check_ms_ago);
+        cJSON_AddStringToObject(root, "funnel_last_error", fs.last_error);
+    }
+
+    // Sockets de lwIP: la tabla tiene 16 huecos (maximo del Kconfig) y el
+    // ESP32 abre control plane + DERP + DISCO + STUN + PeerAPI + 2 httpd +
+    // proxy + Telegram. Si se llena, accept() falla con ENFILE y se caen las
+    // conexiones entrantes. Este contador dice cuantas veces ha pasado.
+    cJSON_AddNumberToObject(root, "sock_enfile_hits", ml_peerapi_get_enfile_hits());
+    // Presupuesto de sockets transitorios: las operaciones de fondo (sondas,
+    // WOL, health check) nunca se comen los huecos del camino publico.
+    cJSON_AddNumberToObject(root, "sock_transient_in_use", sockmgr_in_use());
+    cJSON_AddNumberToObject(root, "sock_transient_free", sockmgr_free());
+    cJSON_AddNumberToObject(root, "sock_transient_max", CONFIG_SOCKMGR_MAX_TRANSIENT);
+    cJSON_AddNumberToObject(root, "sock_enfile_total", sockmgr_enfile_hits());
+
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (body == NULL) {
@@ -1043,6 +1086,12 @@ static const httpd_uri_t s_uris_public[] = {
 static esp_err_t handle_api_cert_set(httpd_req_t *req);
 static esp_err_t handle_api_cert_info(httpd_req_t *req);
 static esp_err_t handle_api_cert_delete(httpd_req_t *req);
+static esp_err_t handle_funnel_status(httpd_req_t *req);
+static esp_err_t handle_funnel_on(httpd_req_t *req);
+static esp_err_t handle_funnel_off(httpd_req_t *req);
+static esp_err_t handle_funnel_check(httpd_req_t *req);
+static esp_err_t handle_funnel_refresh(httpd_req_t *req);
+static esp_err_t handle_diag_sockets(httpd_req_t *req);
 
 
 
@@ -1056,6 +1105,12 @@ static const httpd_uri_t s_uris_private[] = {
     { .uri = "/autoset",       .method = HTTP_POST,   .handler = handle_autoset },
     { .uri = "/diag/outage",   .method = HTTP_POST,   .handler = handle_diag_outage },
     { .uri = "/schedule",      .method = HTTP_POST,   .handler = handle_schedule },
+    { .uri = "/funnel/status", .method = HTTP_GET,    .handler = handle_funnel_status },
+    { .uri = "/funnel/on",     .method = HTTP_GET,    .handler = handle_funnel_on },
+    { .uri = "/funnel/off",    .method = HTTP_GET,    .handler = handle_funnel_off },
+    { .uri = "/funnel/check",  .method = HTTP_GET,    .handler = handle_funnel_check },
+    { .uri = "/funnel/refresh",.method = HTTP_GET,    .handler = handle_funnel_refresh },
+    { .uri = "/diag/sockets",  .method = HTTP_GET,    .handler = handle_diag_sockets },
 };
 #endif
 
@@ -1136,13 +1191,25 @@ esp_err_t web_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.stack_size = 8192;
-    config.max_open_sockets = 4;
+    // Cada socket abierto cuenta: lwIP solo admite CONFIG_LWIP_MAX_SOCKETS
+    // (16, el maximo del Kconfig en ESP-IDF) y el ESP32 ya tiene abiertos el
+    // control plane, DERP, DISCO, STUN, el PeerAPI, el proxy y el bot de
+    // Telegram. Con la tabla llena, accept() falla con ENFILE y se caen las
+    // conexiones entrantes (medido el 2026-10-29: el Funnel publico y las
+    // sondas de readiness fallaban de forma intermitente por esto).
+    // 2 sesiones por servidor es suficiente: todas las respuestas se mandan
+    // con "Connection: close", asi que las sesiones son muy cortas.
+    config.max_open_sockets = 1;
+    config.recv_wait_timeout = 3;
+    config.send_wait_timeout = 3;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;  
     // 20 handlers llenaban el cupo (12 publicos + 8 privados) y el siguiente
     // registro fallaba con ESP_ERR_HTTPD_HANDLERS_FULL: el servidor HTTP no
     // arrancaba y no se veia nada (ni el portal ni /diag). Con 24 hay margen.
-    config.max_uri_handlers = 24;
+    // Ahora son 12 publicos + 14 privados (los 5 endpoints /funnel/*)
+    // -> 26: subimos a 32.
+    config.max_uri_handlers = 32;
 
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) {
@@ -1176,7 +1243,12 @@ esp_err_t web_server_funnel_start(void) {
     config.server_port = 443;
     config.stack_size = 8192;
     config.ctrl_port += 1;  // different from :80 to avoid collision
-    config.max_open_sockets = 4;
+    // Ver el comentario del :80: la tabla de sockets de lwIP (16) es el
+    // recurso escaso del ESP32 y este servidor (el del Funnel) es el que
+    // atiende las conexiones del edge publico.
+    config.max_open_sockets = 1;
+    config.recv_wait_timeout = 3;
+    config.send_wait_timeout = 3;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;  
     // 20 handlers llenaban el cupo (12 publicos + 8 privados) y el siguiente
@@ -1263,7 +1335,11 @@ esp_err_t web_server_funnel_tls_start(void) {
     httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
     cfg.httpd.server_port = 443;
     cfg.httpd.ctrl_port += 1;  // diferente de :80 para evitar colisión
-    cfg.httpd.max_open_sockets = 4;
+    // Ver el comentario del :80: la tabla de sockets de lwIP (16) es el
+    // recurso escaso del ESP32.
+    cfg.httpd.max_open_sockets = 1;
+    cfg.httpd.recv_wait_timeout = 3;
+    cfg.httpd.send_wait_timeout = 3;
     cfg.httpd.lru_purge_enable = true;
     cfg.httpd.uri_match_fn = httpd_uri_match_wildcard;  
     cfg.httpd.max_uri_handlers = 20;
@@ -1490,5 +1566,109 @@ static esp_err_t handle_api_cert_delete(httpd_req_t *req) {
     httpd_resp_send(req, "{\"status\":\"cleared\"}\n", 19);
     return ESP_OK;
 }
+
+
+
+
+
+
+
+
+
+static esp_err_t funnel_reply_json(httpd_req_t *req, const char *json) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, json, strlen(json));
+    return ESP_OK;
+}
+
+static esp_err_t handle_funnel_status(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /funnel/status");
+    funnel_ctl_status_t fs;
+    funnel_ctl_get_status(&fs);
+    char body[512];
+    snprintf(body, sizeof(body),
+        "{\"enabled\":%s,\"healthy\":%s,\"checks\":%u,\"failures\":%u,"
+        "\"consecutive_failures\":%u,\"repairs\":%u,\"last_check_ms_ago\":%u,"
+        "\"last_ok_ms_ago\":%u,\"last_error\":\"%s\"}\n",
+        fs.enabled ? "true" : "false",
+        fs.healthy ? "true" : "false",
+        (unsigned)fs.checks, (unsigned)fs.failures,
+        (unsigned)fs.consecutive_failures, (unsigned)fs.repairs,
+        (unsigned)fs.last_check_ms_ago, (unsigned)fs.last_ok_ms_ago,
+        fs.last_error);
+    return funnel_reply_json(req, body);
+}
+
+static esp_err_t handle_funnel_on(httpd_req_t *req) {
+    ESP_LOGW(TAG, "GET /funnel/on");
+    esp_err_t err = funnel_ctl_set_enabled(true);
+    const char *body = (err == ESP_OK)
+        ? "{\"status\":\"funnel habilitado\"}\n"
+        : "{\"status\":\"error\"}\n";
+    return funnel_reply_json(req, body);
+}
+
+static esp_err_t handle_funnel_off(httpd_req_t *req) {
+    ESP_LOGW(TAG, "GET /funnel/off");
+    esp_err_t err = funnel_ctl_set_enabled(false);
+    const char *body = (err == ESP_OK)
+        ? "{\"status\":\"funnel deshabilitado\"}\n"
+        : "{\"status\":\"error\"}\n";
+    return funnel_reply_json(req, body);
+}
+
+static esp_err_t handle_funnel_check(httpd_req_t *req) {
+    ESP_LOGI(TAG, "GET /funnel/check");
+    char detail[96] = "";
+    bool ok = funnel_ctl_check_now(detail, sizeof(detail));
+    char body[256];
+    snprintf(body, sizeof(body),
+        "{\"ok\":%s,\"detail\":\"%s\"}\n", ok ? "true" : "false", detail);
+    return funnel_reply_json(req, body);
+}
+
+
+
+
+
+
+
+
+
+static esp_err_t handle_diag_sockets(httpd_req_t *req) {
+    int fds[40];
+    int n = 0;
+    while (n < 40) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) break;
+        fds[n++] = fd;
+    }
+    int free_slots = n;
+    int err = errno;
+    for (int i = 0; i < n; i++) close(fds[i]);
+
+    char body[320];
+    int len = snprintf(body, sizeof(body),
+        "{\"free_slots\":%d,\"errno\":%d,\"max_slots\":%d,"
+        "\"transient_in_use\":%d,\"transient_max\":%d,"
+        "\"enfile_total\":%u,\"enfile_peerapi\":%u}\n",
+        free_slots, err, CONFIG_LWIP_MAX_SOCKETS,
+        sockmgr_in_use(), CONFIG_SOCKMGR_MAX_TRANSIENT,
+        (unsigned)sockmgr_enfile_hits(), (unsigned)ml_peerapi_get_enfile_hits());
+    return funnel_reply_json(req, body);
+}
+
+static esp_err_t handle_funnel_refresh(httpd_req_t *req) {
+    ESP_LOGW(TAG, "GET /funnel/refresh");
+    esp_err_t err = funnel_ctl_refresh();
+    
+
+    const char *body = (err == ESP_OK)
+        ? "{\"status\":\"ciclo off->on en curso (en segundo plano)\"}\n"
+        : "{\"status\":\"error\"}\n";
+    return funnel_reply_json(req, body);
+}
+
 
 #endif // CONFIG_ESP_HTTPS_SERVER_ENABLE

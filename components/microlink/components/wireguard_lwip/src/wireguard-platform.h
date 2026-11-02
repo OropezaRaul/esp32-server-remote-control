@@ -65,4 +65,4 @@ void wireguard_tai64n_now(uint8_t *output);
 bool wireguard_is_under_load();
 
 
-#endif /* _WIREGUARD_PLATFORM_H_ */
+#endif 

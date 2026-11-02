@@ -11,6 +11,7 @@
 #include "microlink_wrapper.h"
 #include "telegram.h"
 #include "wd_logic.h"
+#include "system_health.h"
 
 #include "sdkconfig.h"
 
@@ -31,8 +32,8 @@ static const char *TAG = "ml_watchdog";
 
 
 static void reboot_deadline_cb(void *arg) {
-    ESP_LOGE(TAG, ">>> reboot deadline fired — esp_restart() incondicional");
-    esp_restart();
+    ESP_LOGE(TAG, ">>> reboot deadline fired — system_safe_restart() incondicional");
+    system_safe_restart("reboot deadline");
 }
 
 typedef struct {
@@ -103,7 +104,7 @@ static void trigger_reboot(uint32_t target_s) {
     if (terr != ESP_OK || esp_timer_start_once(deadline, ML_WD_REBOOT_NOTIFY_GRACE_US) != ESP_OK) {
         ESP_LOGE(TAG, "deadline timer unavailable (%s) — rebooting directly",
                  esp_err_to_name(terr));
-        esp_restart();
+        system_safe_restart("watchdog direct");
     }
 
     
@@ -114,8 +115,8 @@ static void trigger_reboot(uint32_t target_s) {
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    ESP_LOGE(TAG, "calling esp_restart()");
-    esp_restart();
+    ESP_LOGE(TAG, "calling system_safe_restart()");
+    system_safe_restart("watchdog normal");
     
 }
 

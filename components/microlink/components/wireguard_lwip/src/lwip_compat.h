@@ -61,4 +61,4 @@
         ip_addr_netcmp(addr1, addr2, mask)
 #endif
 
-#endif /* LWIP_COMPAT_H */
+#endif 

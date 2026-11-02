@@ -22,6 +22,7 @@
 
 
 #include "microlink_internal.h"
+#include "ml_peerapi.h"
 #include "x25519.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -703,11 +704,34 @@ static int do_h2_preface(microlink_t *ml, ml_noise_state_t *noise) {
 
 
 
-static void add_funnel_hostinfo(microlink_t *ml, cJSON *hostinfo) {
-    if (!ml->config.enable_funnel) return;
 
-    cJSON_AddBoolToObject(hostinfo, "IngressEnabled", true);
-    cJSON_AddBoolToObject(hostinfo, "WireIngress", true);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static void add_funnel_hostinfo(microlink_t *ml, cJSON *hostinfo) {
+    if (!ml->config.enable_funnel) return;   
+
+    bool on = ml->funnel_active;
+    cJSON_AddBoolToObject(hostinfo, "IngressEnabled", on);
+    cJSON_AddBoolToObject(hostinfo, "WireIngress", !on);
+
+    if (!on) {
+        ESP_LOGI(TAG, "Hostinfo: IngressEnabled=false, WireIngress=true "
+                      "(Funnel apagado a mano; el DNS publico se conserva)");
+        return;
+    }
 
     if (ml->config.peerapi_port != 0) {
         cJSON *services = cJSON_AddArrayToObject(hostinfo, "Services");
@@ -715,14 +739,25 @@ static void add_funnel_hostinfo(microlink_t *ml, cJSON *hostinfo) {
             cJSON *svc4 = cJSON_CreateObject();
             if (svc4) {
                 cJSON_AddStringToObject(svc4, "Proto", "peerapi4");
-                cJSON_AddNumberToObject(svc4, "Port", ml->config.peerapi_port);
+                
+                cJSON_AddNumberToObject(svc4, "Port",
+                    ml->config.peerapi6_port ? ml->config.peerapi6_port
+                                             : ml->config.peerapi_port);
                 cJSON_AddItemToArray(services, svc4);
             }
 #if LWIP_IPV6
             cJSON *svc6 = cJSON_CreateObject();
             if (svc6) {
                 cJSON_AddStringToObject(svc6, "Proto", "peerapi6");
-                cJSON_AddNumberToObject(svc6, "Port", ml->config.peerapi_port);
+                
+
+
+
+
+
+                cJSON_AddNumberToObject(svc6, "Port",
+                    ml->config.peerapi6_port ? ml->config.peerapi6_port
+                                             : ml->config.peerapi_port);
                 cJSON_AddItemToArray(services, svc6);
             }
 #endif
@@ -748,6 +783,8 @@ static void parse_self_addresses(microlink_t *ml, cJSON *addresses) {
                 char ip_buf[16];
                 microlink_ip_to_str(ml->vpn_ip, ip_buf);
                 ESP_LOGI(TAG, "Our VPN IPv4: %s", ip_buf);
+                
+                ml_peerapi_set_vpn_ip(ml->vpn_ip);
             }
             continue;
         }
@@ -1227,23 +1264,23 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
                 
                 if (sscanf(addr_item->valuestring, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
                     update->vpn_ip = (a << 24) | (b << 16) | (c << 8) | d;
-                    update->is_ipv6 = false;
-                    break;
+                    continue;
                 }
 #if LWIP_IPV6
-                if (!update->is_ipv6) {
-                    char clean_v6[64];
-                    strlcpy(clean_v6, addr_item->valuestring, sizeof(clean_v6));
-                    char *slash = strchr(clean_v6, '/');
-                    if (slash) *slash = '\0';
-                    ip6_addr_t v6;
-                    if (ip6addr_aton(clean_v6, &v6)) {
-                        memcpy(&update->vpn_ipv6, &v6, sizeof(ip6_addr_t));
-                        update->is_ipv6 = true;
-                    }
+                char clean_v6[64];
+                strlcpy(clean_v6, addr_item->valuestring, sizeof(clean_v6));
+                char *slash = strchr(clean_v6, '/');
+                if (slash) *slash = '\0';
+                ip6_addr_t v6;
+                if (ip6addr_aton(clean_v6, &v6)) {
+                    memcpy(&update->vpn_ipv6, &v6, sizeof(ip6_addr_t));
+                    update->has_ipv6 = true;
                 }
 #endif
             }
+        }
+        if (update->vpn_ip == 0 && update->has_ipv6) {
+            update->is_ipv6 = true;
         }
 
         
@@ -2497,6 +2534,16 @@ void ml_coord_task(void *arg) {
                 break;
             case ML_CMD_UPDATE_ENDPOINTS:
                 
+
+
+
+                if (state == COORD_LONG_POLL) {
+                    ESP_LOGI(TAG, "Forced endpoint update (Hostinfo re-advertise)");
+                    do_send_endpoint_update(ml, &noise);
+                } else {
+                    ESP_LOGW(TAG, "Forced endpoint update ignored (state=%d)",
+                             (int)state);
+                }
                 break;
             }
         }

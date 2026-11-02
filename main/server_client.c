@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "sdkconfig.h"
+#include "sockmgr.h"
 
 static const char *TAG = "server";
 
@@ -206,12 +207,132 @@ bool server_tcp_alive(int timeout_ms) {
     return server_tcp_port_alive(CONFIG_SERVER_SSH_PORT, timeout_ms);
 }
 
+// El daemon nativo (:9999) es el UNICO canal que puede ejecutar el apagado.
+// sshd (:22) solo sirve como indicador de vida, y ademas tarda ~20-30 s en
+// levantar en un arranque en frio: si el ESP32 decide solo con :22, durante
+// esa ventana creera que el servidor esta apagado y se negara a mandarle el
+// /off (el /off del usuario no hacia NADA y el equipo se quedaba encendido).
+bool server_daemon_alive(int timeout_ms) {
+    return server_tcp_port_alive(CONFIG_SERVER_HTTP_PORT, timeout_ms);
+}
+
 bool server_web_alive(int timeout_ms) {
     // Probar Nginx reverse proxy (:8080) primero, o servicio de shutdown HTTP (:9999)
     if (server_tcp_port_alive(8080, timeout_ms)) {
         return true;
     }
     return server_tcp_port_alive(CONFIG_SERVER_HTTP_PORT, timeout_ms);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+bool server_state_alive_now(int timeout_ms) {
+    if (timeout_ms <= 0) timeout_ms = 600;
+    if (timeout_ms > 3000) timeout_ms = 3000;
+
+    
+
+    if (!sockmgr_take(timeout_ms)) return false;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        if (errno == ENFILE) sockmgr_note_enfile();
+        sockmgr_give();
+        return false;
+    }
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
+        close(sock);
+        sockmgr_give();
+        return false;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(CONFIG_SERVER_HTTP_PORT);
+    addr.sin_addr.s_addr = inet_addr(CONFIG_SERVER_IP);
+
+    int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) {
+        close(sock);
+        sockmgr_give();
+        return false;
+    }
+    if (rc < 0) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(sock, &wfds);
+        struct timeval tv = {
+            .tv_sec = timeout_ms / 1000,
+            .tv_usec = (timeout_ms % 1000) * 1000,
+        };
+        int sr = select(sock + 1, NULL, &wfds, NULL, &tv);
+        if (sr <= 0) { close(sock); sockmgr_give(); return false; }
+        int sockerr = 0;
+        socklen_t slen = sizeof(sockerr);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &sockerr, &slen) < 0 || sockerr != 0) {
+            close(sock);
+            sockmgr_give();
+            return false;
+        }
+    }
+
+    fcntl(sock, F_SETFL, flags);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = (timeout_ms % 1000) * 1000 };
+    if (tv.tv_usec == 0) tv.tv_sec = 1;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    char req[256];
+    int req_len = snprintf(req, sizeof(req),
+        "GET /state HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "X-ESP32-Secret: %s\r\n"
+        "Connection: close\r\n"
+        "User-Agent: esp32-live-probe/1.0\r\n"
+        "\r\n",
+        CONFIG_SERVER_IP, CONFIG_SERVER_SHUTDOWN_SECRET);
+    if (req_len <= 0 || req_len >= (int)sizeof(req)) {
+        close(sock);
+        sockmgr_give();
+        return false;
+    }
+
+    int sent = 0;
+    while (sent < req_len) {
+        int n = send(sock, req + sent, req_len - sent, 0);
+        if (n <= 0) { close(sock); sockmgr_give(); return false; }
+        sent += n;
+    }
+
+    char buf[128];
+    int total = 0;
+    while (total < (int)sizeof(buf) - 1) {
+        int n = recv(sock, buf + total, sizeof(buf) - 1 - total, 0);
+        if (n <= 0) break;
+        total += n;
+        buf[total] = 0;
+        if (strstr(buf, "\r\n\r\n") != NULL) break;
+    }
+    close(sock);
+
+    sockmgr_give();
+    if (total <= 0) return false;
+    int status = 0;
+    if (sscanf(buf, "HTTP/1.%*d %d", &status) != 1) return false;
+    return status == 200;
 }
 
 int server_http_probe_at(const char *ip, uint16_t port, const char *host_header,

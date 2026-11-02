@@ -137,6 +137,19 @@ esp_err_t wifi_init_sta(void) {
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    
+
+
+
+
+
+
+
+
+
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "wifi_init_sta finished, connecting to SSID: %s", CONFIG_WIFI_SSID);
@@ -179,4 +192,14 @@ esp_ip4_addr_t wifi_get_ip(void) {
     }
     esp_ip4_addr_t zero = {0};
     return zero;
+}
+
+void wifi_deinit_for_restart(void) {
+    ESP_LOGI(TAG, "preparing WiFi for safe restart...");
+    if (wifi_event_group != NULL) {
+        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(150));
 }

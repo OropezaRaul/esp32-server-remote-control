@@ -467,6 +467,20 @@ bool ml_stun_parse_response(const uint8_t *data, size_t len,
 static esp_err_t ensure_stun_socket6(microlink_t *ml) {
     if (ml->stun_sock6 >= 0) return ESP_OK;
 
+    
+
+
+
+
+
+
+#ifndef CONFIG_ML_WANT_IPV6_ENDPOINT
+#define CONFIG_ML_WANT_IPV6_ENDPOINT 0
+#endif
+#if !CONFIG_ML_WANT_IPV6_ENDPOINT
+    return ESP_FAIL;
+#endif
+
     ml->stun_sock6 = ml_socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
     if (ml->stun_sock6 < 0) {
         ESP_LOGD(TAG, "Failed to create IPv6 STUN socket: %d (expected on IPv4-only)", errno);

@@ -75,6 +75,10 @@ size_t system_health_get_crash_logs(char *out, size_t max_len);
 
 void system_health_clear_crash_logs(void);
 
+
+
+void system_safe_restart(const char *reason);
+
 #ifdef __cplusplus
 }
 #endif

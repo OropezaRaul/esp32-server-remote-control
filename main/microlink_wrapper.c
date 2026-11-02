@@ -74,9 +74,11 @@ esp_err_t microlink_wrapper_start(void) {
 #if CONFIG_TAILSCALE_FUNNEL_ENABLED
         .enable_funnel = true,
         .peerapi_port = CONFIG_TAILSCALE_PEERAPI_PORT,
+        .peerapi6_port = CONFIG_TAILSCALE_PEERAPI6_PORT,
 #else
         .enable_funnel = false,
         .peerapi_port = 0,
+        .peerapi6_port = 0,
 #endif
     };
 
@@ -181,4 +183,14 @@ const char *microlink_wrapper_get_fqdn(void) {
 esp_err_t microlink_wrapper_set_dns(const char *name, const char *value,
                                     uint32_t timeout_ms) {
     return microlink_set_dns(name, value, timeout_ms);
+}
+
+esp_err_t microlink_wrapper_set_funnel_enabled(bool enabled) {
+    if (s_ml == NULL) return ESP_ERR_INVALID_STATE;
+    return microlink_set_funnel_enabled(s_ml, enabled);
+}
+
+bool microlink_wrapper_get_funnel_enabled(void) {
+    if (s_ml == NULL) return false;
+    return microlink_get_funnel_enabled(s_ml);
 }

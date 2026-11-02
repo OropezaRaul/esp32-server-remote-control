@@ -56,17 +56,28 @@ static const char *TAG = "ml_peerapi";
 #define PEERAPI_CONN_STACK      6144
 #define PEERAPI_CONN_PRIO       3
 #define PEERAPI_RECV_TIMEOUT_MS 5000
-#define PEERAPI_TUNNEL_IDLE_S   120
+
+
+
+#define PEERAPI_TUNNEL_IDLE_S   10
 
 #define PEERAPI_IS_CGNAT(ip) (((ip) & 0xFFC00000UL) == 0x64400000UL) 
 
 #define FUNNEL_TLS_HOST "127.0.0.1"  
 #define FUNNEL_TLS_PORT 443          
 
-static int s_listen_fd = -1;
+static int s_listen_fd = -1;       
+static int s_listen_fd6 = -1;      
 static uint16_t s_port = 0;
+static uint16_t s_port6 = 0;
 static TaskHandle_t s_task = NULL;
+static TaskHandle_t s_task6 = NULL;
 static volatile bool s_shutdown = false;
+
+static volatile uint32_t s_enfile_hits = 0;
+
+
+static volatile uint32_t s_vpn_ip = 0;
 
 
 
@@ -149,19 +160,39 @@ static void send_simple(int fd, int code, const char *status, const char *body) 
 
 
 
+
+
+
+
+
+
+
+
 static void ingress_tunnel(int client_fd) {
     int up = socket(AF_INET, SOCK_STREAM, 0);
     if (up < 0) {
-        ESP_LOGE(TAG, "ingress: socket failed errno=%d", errno);
+        
+
+
+        if (errno == ENFILE) {
+            s_enfile_hits++;
+            ESP_LOGE(TAG, "ingress: ENFILE (tabla de sockets lwIP LLENA, "
+                          "acumulado %u)", (unsigned)s_enfile_hits);
+        } else {
+            ESP_LOGE(TAG, "ingress: socket failed errno=%d", errno);
+        }
         return;
     }
 
+    uint32_t target_ip = s_vpn_ip ? s_vpn_ip : 0x7F000001UL; 
     struct sockaddr_in dst = {0};
     dst.sin_family = AF_INET;
-    dst.sin_addr.s_addr = htonl(0x7F000001UL); 
+    dst.sin_addr.s_addr = htonl(target_ip);
     dst.sin_port = htons(FUNNEL_TLS_PORT);
     if (connect(up, (struct sockaddr *)&dst, sizeof(dst)) != 0) {
-        ESP_LOGE(TAG, "ingress: connect " FUNNEL_TLS_HOST ":%u failed errno=%d",
+        ESP_LOGE(TAG, "ingress: connect %u.%u.%u.%u:%u failed errno=%d",
+                 (unsigned)((target_ip >> 24) & 0xff), (unsigned)((target_ip >> 16) & 0xff),
+                 (unsigned)((target_ip >> 8) & 0xff), (unsigned)(target_ip & 0xff),
                  (unsigned)FUNNEL_TLS_PORT, errno);
         closesocket(up);
         send_simple(client_fd, 502, "Bad Gateway", "{}");
@@ -311,19 +342,31 @@ out:
 
 
 
-static void peerapi_accept_task(void *arg) {
-    (void)arg;
-    ESP_LOGI(TAG, "PeerAPI listener started on port %u (IPv4+IPv6 dual-stack ready)",
-             (unsigned)s_port);
 
+
+static void peerapi_accept_loop(int listen_fd, uint16_t port, const char *fam) {
     while (!s_shutdown) {
         struct sockaddr_storage peer;
         socklen_t plen = sizeof(peer);
-        int fd = accept(s_listen_fd, (struct sockaddr *)&peer, &plen);
+        int fd = accept(listen_fd, (struct sockaddr *)&peer, &plen);
         if (fd < 0) {
             if (s_shutdown) break;
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                ESP_LOGW(TAG, "accept failed: errno=%d", errno);
+                
+
+
+
+
+
+                if (errno == ENFILE) {
+                    s_enfile_hits++;
+                    ESP_LOGW(TAG, "accept(%s:%u) ENFILE: tabla de sockets lwIP "
+                                  "LLENA (%u fallos) — se cae la conexion",
+                             fam, (unsigned)port, (unsigned)s_enfile_hits);
+                } else {
+                    ESP_LOGW(TAG, "accept(%s:%u) failed: errno=%d", fam,
+                             (unsigned)port, errno);
+                }
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
             continue;
@@ -338,49 +381,86 @@ static void peerapi_accept_task(void *arg) {
             closesocket(fd);
         }
     }
+}
 
-    ESP_LOGI(TAG, "PeerAPI listener stopped");
+static void peerapi_accept_task(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "PeerAPI listener (IPv4) started on port %u", (unsigned)s_port);
+    peerapi_accept_loop(s_listen_fd, s_port, "v4");
+    ESP_LOGI(TAG, "PeerAPI listener (IPv4) stopped");
+    vTaskDelete(NULL);
+}
+
+static void peerapi_accept6_task(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "PeerAPI listener (IPv6) started on port %u", (unsigned)s_port6);
+    peerapi_accept_loop(s_listen_fd6, s_port6, "v6");
+    ESP_LOGI(TAG, "PeerAPI listener (IPv6) stopped");
     vTaskDelete(NULL);
 }
 
 
 
-esp_err_t ml_peerapi_start(uint16_t port) {
-    if (port == 0) return ESP_ERR_INVALID_ARG;
+esp_err_t ml_peerapi_start(uint16_t port_v4, uint16_t port_v6) {
+    if (port_v4 == 0) return ESP_ERR_INVALID_ARG;
     if (s_task) return ESP_ERR_INVALID_STATE;
 
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #if LWIP_IPV6
+    
+
+
+
+
+
+
+
+
+
+    if (port_v6 != 0 && port_v6 != port_v4) {
+        port_v4 = port_v6;   
+    }
+#endif
+
+    
     int fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (fd < 0) {
-        ESP_LOGE(TAG, "socket AF_INET6 failed: errno=%d, falling back to AF_INET", errno);
+        ESP_LOGE(TAG, "socket AF_INET6 failed: errno=%d", errno);
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
             ESP_LOGE(TAG, "socket AF_INET failed: errno=%d", errno);
             return ESP_FAIL;
         }
     }
-#else
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        ESP_LOGE(TAG, "socket failed: errno=%d", errno);
-        return ESP_FAIL;
-    }
-#endif
 
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
 #if LWIP_IPV6
-    
     int zero = 0;
     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof(zero));
 
     struct sockaddr_in6 addr6 = {0};
     addr6.sin6_family = AF_INET6;
     addr6.sin6_addr = in6addr_any;
-    addr6.sin6_port = htons(port);
+    addr6.sin6_port = htons(port_v4);
     if (bind(fd, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
-        ESP_LOGE(TAG, "bind IPv6 :%u failed: errno=%d", (unsigned)port, errno);
+        ESP_LOGE(TAG, "bind :%u failed: errno=%d", (unsigned)port_v4, errno);
         close(fd);
         return ESP_FAIL;
     }
@@ -388,21 +468,22 @@ esp_err_t ml_peerapi_start(uint16_t port) {
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(port_v4);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        ESP_LOGE(TAG, "bind :%u failed: errno=%d", (unsigned)port, errno);
+        ESP_LOGE(TAG, "bind :%u failed: errno=%d", (unsigned)port_v4, errno);
         close(fd);
         return ESP_FAIL;
     }
 #endif
     if (listen(fd, 4) != 0) {
-        ESP_LOGE(TAG, "listen :%u failed: errno=%d", (unsigned)port, errno);
+        ESP_LOGE(TAG, "listen :%u failed: errno=%d", (unsigned)port_v4, errno);
         close(fd);
         return ESP_FAIL;
     }
 
     s_listen_fd = fd;
-    s_port = port;
+    s_port = port_v4;
+    s_port6 = port_v4;   
     s_shutdown = false;
 
     if (xTaskCreate(peerapi_accept_task, "ml_peerapi", PEERAPI_STACK,
@@ -423,13 +504,35 @@ esp_err_t ml_peerapi_stop(void) {
         close(s_listen_fd);
         s_listen_fd = -1;
     }
+    if (s_listen_fd6 >= 0) {
+        shutdown(s_listen_fd6, SHUT_RDWR);
+        close(s_listen_fd6);
+        s_listen_fd6 = -1;
+    }
     
     vTaskDelay(pdMS_TO_TICKS(200));
     s_task = NULL;
+    s_task6 = NULL;
     s_port = 0;
+    s_port6 = 0;
     return ESP_OK;
 }
 
 uint16_t ml_peerapi_get_port(void) {
     return s_port;
+}
+
+uint16_t ml_peerapi_get_port6(void) {
+    return s_port6;
+}
+
+void ml_peerapi_set_vpn_ip(uint32_t ip) {
+    s_vpn_ip = ip;
+    ESP_LOGI(TAG, "IP de tailnet para el tunel de ingress: %u.%u.%u.%u",
+             (unsigned)((ip >> 24) & 0xff), (unsigned)((ip >> 16) & 0xff),
+             (unsigned)((ip >> 8) & 0xff), (unsigned)(ip & 0xff));
+}
+
+uint32_t ml_peerapi_get_enfile_hits(void) {
+    return s_enfile_hits;
 }

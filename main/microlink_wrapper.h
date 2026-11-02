@@ -60,3 +60,12 @@ const char *microlink_wrapper_get_fqdn(void);
 
 esp_err_t microlink_wrapper_set_dns(const char *name, const char *value,
                                     uint32_t timeout_ms);
+
+
+
+
+
+
+
+esp_err_t microlink_wrapper_set_funnel_enabled(bool enabled);
+bool microlink_wrapper_get_funnel_enabled(void);

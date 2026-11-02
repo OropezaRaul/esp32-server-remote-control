@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <sys/time.h>
 #include <esp_psram.h>
+#include "wifi.h"
 
 static const char *TAG = "sys_health";
 
@@ -192,7 +193,7 @@ static void supervisor_task(void *arg) {
             // NO alimentamos TWDT. Damos 500ms para flush de log serial y forzamos restart.
             // Si esp_restart() fallase o se bloqueara, el TWDT de hardware reseteará el chip.
             vTaskDelay(pdMS_TO_TICKS(500));
-            esp_restart();
+            system_safe_restart("watchdog stall");
         }
     }
 }
@@ -392,4 +393,11 @@ void system_health_clear_crash_logs(void) {
     s_rtc_data.crash_log_len = 0;
     memset(s_rtc_data.crash_log, 0, sizeof(s_rtc_data.crash_log));
     portEXIT_CRITICAL(&s_log_mux);
+}
+
+void system_safe_restart(const char *reason) {
+    ESP_LOGW(TAG, ">>> system_safe_restart: %s", reason ? reason : "unspecified");
+    wifi_deinit_for_restart();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
 }

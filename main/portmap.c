@@ -162,6 +162,19 @@ static void apply_listeners(void) {
     s_listener_count = 0;
 
     // Arrancar uno por entry. Logueamos fallos pero seguimos con los demás.
+    //
+    // CONFIG_PROXY_ENABLED: los tuneles TCP del ESP32 son REDUNDANTES con el
+    // funnel de server (que ya publica la app por https y por la tailnet) y
+    // cada listener se come un hueco de la tabla de sockets de lwIP, que solo
+    // tiene 16 y es el recurso que hace fallar el Funnel publico y las sondas
+    // de readiness (accept() -> ENFILE, medido el 2026-10-29). Con el proxy
+    // apagado sobran 2 sockets para el camino publico.
+    // Para reactivarlo: CONFIG_PROXY_ENABLED=y (las entradas siguen guardadas
+    // en NVS, no se pierde ninguna).
+#ifndef CONFIG_PROXY_ENABLED
+#define CONFIG_PROXY_ENABLED 0
+#endif
+#if CONFIG_PROXY_ENABLED
     for (int i = 0; i < s_count; i++) {
         proxy_listener_ctx_t *ctx = proxy_listener_create(&s_entries[i]);
         if (ctx) {
@@ -171,6 +184,11 @@ static void apply_listeners(void) {
                      (unsigned)s_entries[i].local_port, s_entries[i].label);
         }
     }
+#else
+    ESP_LOGI(TAG, "proxy TCP desactivado (CONFIG_PROXY_ENABLED=n): las %u "
+                  "entradas siguen en NVS; el acceso a server es por su "
+                  "propio funnel", (unsigned)s_count);
+#endif
 }
 
 // ─── Public API ───────────────────────────────────────────────

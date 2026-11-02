@@ -30,6 +30,8 @@ idf_component_register(
         "power_event.c"
         "power_event_logic.c"
         "auto_reboot.c"
+        "funnel_ctl.c"
+        "sockmgr.c"
         "proxy.c"
         "portmap.c"
         "${MICROLINK_DIR}/src/microlink.c"

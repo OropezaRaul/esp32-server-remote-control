@@ -69,6 +69,26 @@ menu "ESP32 Remote Control"
                 only from tailnet sources (100.64.0.0/10) over WireGuard.
                 Must not collide with 80, 443, 8080, 8443, 9999.
 
+        config TAILSCALE_PEERAPI6_PORT
+            int "PeerAPI listener port for IPv6 (announced as peerapi6)"
+            default 51902
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                tailscaled abre UN listener por familia de direcciones y los
+                anuncia por separado ("peerapi4" y "peerapi6"). No es
+                cosmético: el edge del Funnel de Tailscale es un nodo
+                SOLO-IPv6 (los "ingress peers" viven en fd7a:115c:a1e0::/48)
+                y marca el servicio peerapi6. Con un unico socket dual-stack
+                el accept() de los pares IPv6 reales falla (errno=23) y la
+                conexion del edge muere antes de llegar: el cliente ve un
+                EOF en el TLS y el funnel queda muerto (medido el 2026-10-29).
+                Si es IGUAL al puerto IPv4 se abre UN SOLO socket dual-stack
+                (IPv4+IPv6), que es lo que hace el ESP32 por defecto: cada
+                socket cuenta, y la tabla de lwIP solo admite 16 (maximo del
+                Kconfig). Con la tabla llena, accept() falla con ENFILE y la
+                conexion del edge del Funnel muere (el cliente ve un EOF en
+                el TLS): medido el 2026-10-29.
+
         config ML_ACME_ENABLED
             bool "Obtain Let's Encrypt cert via ACME (DNS-01)"
             default n
@@ -159,6 +179,60 @@ menu "ESP32 Remote Control"
                 antes de REBOOT_AFTER_S, se rebotea el ESP32 completo.
                 Default 150s < REBOOT_AFTER_S (300s) deja `reboot` como
                 ultima linea de defensa.
+    endmenu
+
+    menu "Proxy TCP (tuneles hacia server)"
+        config PROXY_ENABLED
+            bool "Abrir listeners TCP (proxy) hacia server"
+            default n
+            help
+                Los tuneles TCP del ESP32 (8080 -> server:8080, 8443 ->
+                server:8443) son redundantes con el funnel de server, que
+                ya publica la app por https y por la tailnet. Ademas cada
+                listener abierto consume un hueco de la tabla de sockets de
+                lwIP, que solo tiene 16 (el maximo del Kconfig de ESP-IDF) y
+                es el recurso escaso que hace fallar el Funnel publico y las
+                sondas de readiness (accept() -> ENFILE, medido el 2026-10-29).
+
+                Desactivado (por defecto) el ESP32 no abre esos listeners; las
+                entradas siguen guardadas en NVS y se pueden reactivar con
+                esta opcion.
+    endmenu
+
+    menu "Tailscale Funnel Control"
+        config FUNNEL_CHECK_INTERVAL_MIN
+            int "Health check del funnel publico (minutos)"
+            default 5
+            range 1 1440
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                Cada cuanto se verifica el CAMINO PUBLICO del funnel
+                (edge de Tailscale -> tailnet -> PeerAPI -> :443 del
+                ESP32) con una peticion HTTPS real al IP publico del edge.
+                El check usa el SNI del nodo, asi que es el mismo camino
+                que recorre un cliente de internet.
+
+        config FUNNEL_REPAIR_ENABLED
+            bool "Reparar automaticamente el funnel si el camino publico cae"
+            default y
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                Si el health check falla dos veces seguidas (y antes hubo al
+                menos un check OK), el ESP32 apaga y vuelve a encender el
+                anuncio de Funnel: eso obliga al control plane a rehacer el
+                mapeo del edge, que es lo que queda obsoleto y deja el
+                funnel muerto (el cliente ve EOF en el TLS).
+
+        config FUNNEL_PUBLIC_IPS
+            string "IPs publicas del edge de Funnel (separadas por coma)"
+            default "209.177.145.97,209.177.145.192"
+            depends on TAILSCALE_FUNNEL_ENABLED
+            help
+                IPs anycast del edge publico de Tailscale Funnel (los que
+                resuelve el DNS publico del nombre del nodo). Se usan solo
+                para el health check. Si Tailscale cambia sus IPs, se
+                actualiza aqui; mientras no haya un check OK, el ESP32 no
+                intenta reparar (para no entrar en un bucle de toggles).
     endmenu
 
     menu "Telegram Configuration"
@@ -372,6 +446,21 @@ menu "ESP32 Remote Control"
         # microlink is registered as a separate component. Since we inlined
         # the sources into main, we re-declare the essentials here so the
         # inlined code can compile.
+        config ML_WANT_IPV6_ENDPOINT
+            bool "Discover the public IPv6 endpoint (STUN over IPv6)"
+            default n
+            help
+                Descubre el endpoint IPv6 publico del nodo (STUN v6) para
+                que los peers lo alcancen por IPv6 directo. Cada socket abierto
+                cuenta: lwIP solo admite CONFIG_LWIP_MAX_SOCKETS (16, el
+                maximo del Kconfig de ESP-IDF) y el ESP32 ya los usa para el
+                control plane, DERP, DISCO, el PeerAPI, los dos httpd, el
+                proxy y el bot de Telegram. Con la tabla llena, accept() falla
+                con ENFILE y se caen las conexiones entrantes (medido el
+                2026-10-29: el Funnel publico no respondia por eso).
+                Desactivado = el ESP32 se anuncia solo con su endpoint IPv4
+                (y por DERP); la IPv6 de tailnet sigue funcionando igual.
+
         config ML_MAX_PEERS
             int "Maximum simultaneous WireGuard peers"
             default 16

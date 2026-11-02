@@ -14,6 +14,7 @@
 #include "server_client.h"
 #include "state.h"
 #include "microlink_wrapper.h"
+#include "wake.h"
 
 #include "sdkconfig.h"
 
@@ -88,17 +89,6 @@ static int upstream_connect(const char *host, uint16_t port, int timeout_ms) {
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    // Bind to VPN IP so lwIP routes through WireGuard netif for Tailscale targets
-    uint32_t vpn_ip = microlink_wrapper_get_vpn_ip();
-    if (vpn_ip != 0) {
-        struct sockaddr_in src = {
-            .sin_family = AF_INET,
-            .sin_port   = 0,
-            .sin_addr.s_addr = htonl(vpn_ip),
-        };
-        bind(sock, (struct sockaddr *)&src, sizeof(src));
-    }
-
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -113,6 +103,21 @@ static int upstream_connect(const char *host, uint16_t port, int timeout_ms) {
             return -1;
         }
         memcpy(&addr.sin_addr, he->h_addr_list[0], sizeof(addr.sin_addr));
+    }
+
+    // Bind to VPN IP only if destination is a Tailscale IP (100.64.0.0/10)
+    uint32_t dest_ip = ntohl(addr.sin_addr.s_addr);
+    bool is_tailscale = ((dest_ip & 0xFFC00000UL) == 0x64400000UL);
+    if (is_tailscale) {
+        uint32_t vpn_ip = microlink_wrapper_get_vpn_ip();
+        if (vpn_ip != 0) {
+            struct sockaddr_in src = {
+                .sin_family = AF_INET,
+                .sin_port   = 0,
+                .sin_addr.s_addr = htonl(vpn_ip),
+            };
+            bind(sock, (struct sockaddr *)&src, sizeof(src));
+        }
     }
 
     int rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
@@ -206,13 +211,9 @@ static bool ensure_upstream_up(const char *host, uint16_t port, uint32_t timeout
     }
 
     server_state_t st = state_get();
-    ESP_LOGI(TAG, "ensure: %s:%u down (state=%s), sending WOL",
+    ESP_LOGI(TAG, "ensure: %s:%u down (state=%s), sending wake request",
              host, (unsigned)port, server_state_str(st));
-    esp_err_t wres = wol_send_default();
-    if (wres != ESP_OK) {
-        ESP_LOGW(TAG, "ensure: WOL failed: %s", esp_err_to_name(wres));
-        // No retornamos false todavía — puede que ya esté booteando.
-    }
+    wake_request("proxy");
 
     uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     int attempts = 0;
@@ -277,9 +278,13 @@ static void handle_connection(void *arg) {
         if (parse_http_path(buf, n, path, sizeof(path)) < 0) {
             path[0] = '/'; path[1] = 0;
         }
-        // Garantizar upstream arriba antes del redirect.
-        ensure_upstream_up(carg->host, carg->entry.upstream_port,
-                           PROXY_WAKE_TIMEOUT_MS);
+        // Si el upstream no está confirmado ON, pedir despertar al supervisor y esperar.
+        server_state_t st = state_get();
+        bool up = (st == SERVER_STATE_ON && state_last_poll_tcp_alive());
+        if (!up) {
+            ensure_upstream_up(carg->host, carg->entry.upstream_port,
+                               PROXY_WAKE_TIMEOUT_MS);
+        }
         send_http_redirect(carg->client_sock, carg->entry.proto,
                            carg->host, carg->entry.upstream_port, path);
         close(carg->client_sock);
@@ -319,12 +324,97 @@ static void handle_connection(void *arg) {
 }
 
 // ─── Listener task ────────────────────────────────────────────
+
+
+
+
+
+static bool proxy_open_listener(proxy_listener_ctx_t *ctx) {
+    ctx->listen_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (ctx->listen_sock < 0) {
+        ESP_LOGE(TAG, "socket() failed: errno=%d", errno);
+        return false;
+    }
+    int opt = 1;
+    setsockopt(ctx->listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port        = htons(ctx->entry.local_port);
+
+    if (bind(ctx->listen_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        ESP_LOGE(TAG, "bind :%u failed: errno=%d (port in use?)",
+                 (unsigned)ctx->entry.local_port, errno);
+        close(ctx->listen_sock);
+        ctx->listen_sock = -1;
+        return false;
+    }
+    if (listen(ctx->listen_sock, PROXY_LISTEN_BACKLOG) != 0) {
+        ESP_LOGE(TAG, "listen :%u failed: errno=%d",
+                 (unsigned)ctx->entry.local_port, errno);
+        close(ctx->listen_sock);
+        ctx->listen_sock = -1;
+        return false;
+    }
+
+    // Timeout en accept() para poder comprobar el flag de parada.
+    struct timeval accept_tv = {.tv_sec = 1, .tv_usec = 0};
+    setsockopt(ctx->listen_sock, SOL_SOCKET, SO_RCVTIMEO, &accept_tv, sizeof(accept_tv));
+    return true;
+}
+
+
+
+static bool proxy_upstream_alive(const proxy_listener_ctx_t *ctx) {
+    const char *host = ctx->entry.upstream_host[0] ? ctx->entry.upstream_host
+                                                   : CONFIG_SERVER_IP;
+    return server_tcp_port_alive_at(host, ctx->entry.upstream_port, 500);
+}
+
 static void proxy_listener_task(void *arg) {
     proxy_listener_ctx_t *ctx = (proxy_listener_ctx_t *)arg;
     ESP_LOGI(TAG, "listener up on :%u (label=%s)",
              (unsigned)ctx->entry.local_port, ctx->entry.label);
 
+    uint32_t last_check_ms = 0;
+    int consecutive_down = 0;
+
     while (!ctx->stopping) {
+        
+
+
+
+
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (now_ms - last_check_ms >= 30000) {
+            last_check_ms = now_ms;
+            if (proxy_upstream_alive(ctx)) {
+                consecutive_down = 0;
+                if (ctx->listen_sock < 0) {
+                    if (proxy_open_listener(ctx)) {
+                        ESP_LOGI(TAG, "listener :%u reabierto (upstream vivo)",
+                                 (unsigned)ctx->entry.local_port);
+                    }
+                }
+            } else {
+                consecutive_down++;
+                if (consecutive_down >= 2 && ctx->listen_sock >= 0) {
+                    ESP_LOGW(TAG, "upstream de :%u caido: se cierra el listener "
+                                 "para no gastar un socket de lwIP",
+                             (unsigned)ctx->entry.local_port);
+                    close(ctx->listen_sock);
+                    ctx->listen_sock = -1;
+                    consecutive_down = 0;
+                }
+            }
+        }
+        if (ctx->listen_sock < 0) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         struct sockaddr_in peer;
         socklen_t plen = sizeof(peer);
         int client_sock = accept(ctx->listen_sock, (struct sockaddr *)&peer, &plen);
@@ -378,41 +468,10 @@ proxy_listener_ctx_t *proxy_listener_create(const portmap_entry_t *entry) {
     ctx->listen_sock = -1;
     ctx->task        = NULL;
 
-    ctx->listen_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (ctx->listen_sock < 0) {
-        ESP_LOGE(TAG, "socket() failed: errno=%d", errno);
+    if (!proxy_open_listener(ctx)) {
         free(ctx);
         return NULL;
     }
-    int opt = 1;
-    setsockopt(ctx->listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port        = htons(entry->local_port);
-
-    if (bind(ctx->listen_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        ESP_LOGE(TAG, "bind :%u failed: errno=%d (port in use?)",
-                 (unsigned)entry->local_port, errno);
-        close(ctx->listen_sock);
-        free(ctx);
-        return NULL;
-    }
-    if (listen(ctx->listen_sock, PROXY_LISTEN_BACKLOG) != 0) {
-        ESP_LOGE(TAG, "listen :%u failed: errno=%d",
-                 (unsigned)entry->local_port, errno);
-        close(ctx->listen_sock);
-        free(ctx);
-        return NULL;
-    }
-
-    // Set accept() timeout so the listener task can check the stopping flag
-    // periodically without relying on select() (which may have issues with
-    // the WireGuard netif in lwIP).
-    struct timeval accept_tv = {.tv_sec = 1, .tv_usec = 0};
-    setsockopt(ctx->listen_sock, SOL_SOCKET, SO_RCVTIMEO, &accept_tv, sizeof(accept_tv));
 
     BaseType_t ok = xTaskCreate(proxy_listener_task, "proxy_lis",
                                 PROXY_LIS_TASK_STACK, ctx,

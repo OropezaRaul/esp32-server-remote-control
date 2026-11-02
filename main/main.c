@@ -19,6 +19,7 @@
 #include "wifi.h"
 #include "wol.h"
 #include "server_client.h"
+#include "power_off.h"
 #include "ready_probe.h"
 #include "state.h"
 #include "telegram.h"
@@ -29,6 +30,7 @@
 #include "automation.h"
 #include "scheduler.h"
 #include "auto_reboot.h"
+#include "funnel_ctl.h"
 #include "portmap.h"
 #include "power_event.h"
 #include "system_health.h"
@@ -91,10 +93,16 @@ static void handle_serial_command(char *line) {
             ESP_LOGI(TAG, "wake solicitado desde serial: %s", wake_status_text());
         }
     } else if (strcmp(line, "off") == 0) {
-        ESP_LOGI(TAG, "server TCP/22 alive: %s",
-                 server_tcp_alive(2000) ? "YES" : "NO");
-        if (server_send_off() == ESP_OK) {
-            state_set(SERVER_STATE_OFF);
+        // Misma secuencia verificada que usa Telegram (power_off.c): decide
+        // con los datos reales, manda el POST /off y CONFIRMA por sonda que el
+        // servidor dejo de responder. Antes este comando mandaba el POST a
+        // pelo y no comprobaba nada.
+        ESP_LOGI(TAG, "server vivo: %s",
+                 (server_daemon_alive(2000) || server_tcp_alive(2000)) ? "SI" : "NO");
+        esp_err_t aerr = power_off_start_async("serial", 0);
+        if (aerr != ESP_OK) {
+            ESP_LOGW(TAG, "no se pudo iniciar la secuencia de apagado: %s",
+                     esp_err_to_name(aerr));
         }
     } else if (strcmp(line, "suspend") == 0) {
         ESP_LOGI(TAG, "server TCP/22 alive: %s",
@@ -105,6 +113,33 @@ static void handle_serial_command(char *line) {
     } else if (strcmp(line, "state") == 0) {
         ESP_LOGI(TAG, "state: %s",
                  server_state_str(state_get()));
+    } else if (strncmp(line, "funnel", 6) == 0) {
+        char *arg = line + 6;
+        while (*arg && isspace((unsigned char)*arg)) arg++;
+        if (*arg == 0 || strcmp(arg, "status") == 0) {
+            char buf[220];
+            funnel_ctl_format_status(buf, sizeof(buf));
+            ESP_LOGI(TAG, "%s", buf);
+        } else if (strcmp(arg, "on") == 0) {
+            esp_err_t err = funnel_ctl_set_enabled(true);
+            ESP_LOGI(TAG, "funnel on result: %s", esp_err_to_name(err));
+        } else if (strcmp(arg, "off") == 0) {
+            esp_err_t err = funnel_ctl_set_enabled(false);
+            ESP_LOGI(TAG, "funnel off result: %s", esp_err_to_name(err));
+        } else if (strcmp(arg, "check") == 0) {
+            char detail[96] = "";
+            bool ok = funnel_ctl_check_now(detail, sizeof(detail));
+            ESP_LOGI(TAG, "funnel check: %s (%s)", ok ? "OK" : "FALLO", detail);
+        } else if (strcmp(arg, "refresh") == 0) {
+            
+
+
+            ESP_LOGW(TAG, "funnel refresh: ciclo off -> on");
+            esp_err_t err = funnel_ctl_refresh();
+            ESP_LOGI(TAG, "funnel refresh result: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGW(TAG, "unknown funnel subcommand: '%s' (try: status, on, off, check, refresh)", arg);
+        }
     } else if (strncmp(line, "tailscale", 9) == 0) {
         char *arg = line + 9;
         while (*arg && isspace((unsigned char)*arg)) arg++;
@@ -218,6 +253,7 @@ static void serial_task(void *arg) {
 }
 
 #if CONFIG_ML_ACME_ENABLED
+#include "ml_cert.h"
 
 
 
@@ -251,9 +287,22 @@ static void acme_task(void *arg) {
     }
 
     for (;;) {
+        bool cert_present = false;
+        size_t c_len = 0, k_len = 0;
+        ml_cert_info(&cert_present, &c_len, &k_len);
+        if (strcmp(web_server_funnel_tls_cert_source(), "nvs") == 0) {
+            cert_present = true;
+        }
+
         int64_t last = ml_acme_last_issue_unix();
         int64_t now = (int64_t)time(NULL);
-        bool need = s_acme_force || (last == 0) || (now - last > 60 * 24 * 3600);
+        
+
+
+        bool need = s_acme_force || (!cert_present) ||
+                    (now > 1700000000 && last > 0 && (now - last > 60 * 24 * 3600));
+        ESP_LOGI(TAG, "acme check: force=%d present=%d (clen=%u klen=%u) last=%" PRId64 " now=%" PRId64 " -> need=%d",
+                 s_acme_force, (int)cert_present, (unsigned)c_len, (unsigned)k_len, last, now, (int)need);
         s_acme_force = false;
         if (need) {
             ESP_LOGI(TAG, "acme: issuing cert for %s", fqdn);
@@ -404,6 +453,14 @@ void app_main(void) {
         esp_err_t pe_err = power_event_init();
         if (pe_err != ESP_OK) {
             ESP_LOGE(TAG, "power_event_init failed: %s", esp_err_to_name(pe_err));
+        }
+
+        // Control del funnel publico (funnel_ctl.c): verifica el camino
+        // publico (edge -> tailnet -> PeerAPI -> :443) y, si se cae, rehace
+        // el mapeo del edge con un ciclo off->on del anuncio de Funnel.
+        esp_err_t fc_err = funnel_ctl_init();
+        if (fc_err != ESP_OK) {
+            ESP_LOGE(TAG, "funnel_ctl_init failed: %s", esp_err_to_name(fc_err));
         }
     }
 

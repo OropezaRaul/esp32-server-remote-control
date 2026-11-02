@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "sdkconfig.h"
+#include "sockmgr.h"
 
 static const char *TAG = "wol";
 
@@ -71,8 +72,14 @@ esp_err_t wol_send(const uint8_t mac[6]) {
     // punto 4 sale aunque lwIP todavia no tenga entrada para esa IP.
     (void)wol_prime_arp();
 
+    
+
+    if (!sockmgr_take(1000)) return ESP_FAIL;
+
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
+        if (errno == ENFILE) sockmgr_note_enfile();
+        sockmgr_give();
         ESP_LOGE(TAG, "socket() failed: errno %d", errno);
         return ESP_FAIL;
     }
@@ -133,6 +140,7 @@ esp_err_t wol_send(const uint8_t mac[6]) {
     }
 
     close(sock);
+    sockmgr_give();
 
     if (sent_ok == 0) {
         ESP_LOGE(TAG, "WOL burst FAILED: 0/%d datagrams left the ESP32 (errno %d). "

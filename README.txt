@@ -433,31 +433,24 @@ if __name__ == "__main__":
 ------------------------------------------------------------------------------
 8. PUBLIC RELEASE CHANGELOG
 ------------------------------------------------------------------------------
-v1.8.3 - Power-off cycle (2026-10-20)
+v1.8.8 - Verified power-off & Funnel socket resilience (2026-10-29)
 --------------------------------------------
-- Single shared power-off sequence (WOL if the host is asleep, then /off),
-  used by the Telegram /off, the inactivity automation and the daily
-  schedule. Before this, the same logic was duplicated three times and each
-  copy had the same defects:
-  * an unreachable host was reported as "already off" without sending
-    anything, so a host suspended in S3 stayed suspended forever (with its
-    tailnet link down);
-  * the S3 -> S0 -> S5 path blocked the calling task for up to ~90 s, more
-    than the 90 s heartbeat budget of the health supervisor, so the gateway
-    restarted itself in the middle of a shutdown and the bot went silent;
-  * the shutdown is now confirmed by probing when the HTTP reply is lost
-    (the daemon powers the machine off before it answers), and the Telegram
-    command runs in the background so the bot keeps answering.
-- S3 vs S5: the state machine no longer degrades a suspended host to OFF
-  after 5 minutes, and the "the host was suspended" hint survives a
-  gateway restart.
-- The inactivity timer no longer cancels a pending power-off while the host
-  is suspended (every portal hit used to cancel it).
-- /diag now exposes the gateway health, uptime and last stall over HTTP.
-- Server-side shutdown daemon (see section 7): it now answers BEFORE acting
-  (the reply used to be lost while the machine suspended or powered off),
-  retries the bind at boot, and forces the power-off when a shutdown
-  inhibitor would otherwise keep the machine running.
+- Verified shutdown sequence: Telegram and serial /off commands now execute
+  an asynchronous, probe-verified shutdown sequence that waits up to 60 s
+  for the host to go down. The response message confirms the result and
+  elapsed time.
+- Power-off decision logic: probes both TCP:22 (SSH) and HTTP:9999 (daemon)
+  with a 45 s grace window to prevent false "already off" conclusions while
+  services settle.
+- Task stack safety: power_off task stack size doubled to 8192 bytes to ensure
+  TLS handshakes during Telegram notifications never overflow the stack.
+- Funnel socket pool resilience:
+  * Strict socket manager (sockmgr) limits transient background probes to
+    prevent lwIP socket exhaustion (ENFILE) on incoming Funnel connections.
+  * Funnel supervisor (funnel_ctl) automatically detects broken ingress paths
+    and refreshes registration.
+  * WireGuard DERP keepalive and ingress peer cleanup to prevent infinite
+    retransmission loops.
 
 v1.8.4 - Power-cut detection and automatic recovery (2026-10-20)
 --------------------------------------------

@@ -40,8 +40,14 @@ static void set_status_text(const char *fmt, ...) {
 // true si server responde de verdad ahora mismo (no es el cache del poll:
 // aqui la decision de "ya desperto" tiene que ser en vivo, o el supervisor
 // seguiria mandando magic packets 30 s despues de que el server arranco).
+//
+// NO basta un connect() a :22: durante la ventana de reanudacion de un S3 el
+// puerto puede responder antes de que el sistema este realmente arriba, y
+// confirmar el despertar con eso deja de enviar magic packets: el servidor
+// se vuelve a dormir y el gate queda muerto (medido el 2026-10-29). El daemon
+// nativo de server (:9999) responde HTTP 200 solo si el sistema esta en pie.
 static bool server_alive_now(void) {
-    return server_tcp_alive(WAKE_PROBE_MS);
+    return server_state_alive_now(WAKE_PROBE_MS);
 }
 
 static void alert_failure(uint32_t now, const wake_logic_t *l) {

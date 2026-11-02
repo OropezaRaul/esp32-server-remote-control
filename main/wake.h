@@ -36,7 +36,7 @@
 #define WAKE_RETRY_MS       10000UL   
 #define WAKE_WINDOW_MS     240000UL   
 #define WAKE_TICK_MS         1000UL   
-#define WAKE_PROBE_MS        300      
+#define WAKE_PROBE_MS        800      
 #define WAKE_ALERT_COOLDOWN_MS (30UL * 60UL * 1000UL) 
 
 typedef struct {

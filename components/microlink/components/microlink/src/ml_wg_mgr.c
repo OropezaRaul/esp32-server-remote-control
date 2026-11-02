@@ -335,33 +335,37 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
 }
 
 static void wg_update_vpn_ip(microlink_t *ml) {
-    if (ml->wg_netif) {
-        struct netif *netif = (struct netif *)ml->wg_netif;
-        if (ml->vpn_ip != 0) {
-            uint8_t a = (ml->vpn_ip >> 24) & 0xFF;
-            uint8_t b = (ml->vpn_ip >> 16) & 0xFF;
-            uint8_t c = (ml->vpn_ip >> 8) & 0xFF;
-            uint8_t d = ml->vpn_ip & 0xFF;
-            IP4_ADDR(&netif->ip_addr.u_addr.ip4, a, b, c, d);
-        }
+    if (!ml || !ml->wg_netif) return;
+    struct netif *netif = (struct netif *)ml->wg_netif;
+
+    static uint32_t s_last_v4 = 0;
+    if (ml->vpn_ip != 0 && ml->vpn_ip != s_last_v4) {
+        uint8_t a = (ml->vpn_ip >> 24) & 0xFF;
+        uint8_t b = (ml->vpn_ip >> 16) & 0xFF;
+        uint8_t c = (ml->vpn_ip >> 8) & 0xFF;
+        uint8_t d = ml->vpn_ip & 0xFF;
+        IP_SET_TYPE_VAL(netif->ip_addr, IPADDR_TYPE_V4);
+        IP4_ADDR(&netif->ip_addr.u_addr.ip4, a, b, c, d);
+        s_last_v4 = ml->vpn_ip;
+        ESP_LOGI(TAG, "wg_netif IPv4 configured: %u.%u.%u.%u", (unsigned)a, (unsigned)b, (unsigned)c, (unsigned)d);
+    }
 #if LWIP_IPV6
-        if (!ip6_addr_isany(&ml->vpn_ipv6)) {
-            s8_t match = netif_get_ip6_addr_match(netif, &ml->vpn_ipv6);
-            if (match < 0) {
-                s8_t chosen_idx = 0;
-                err_t err = netif_add_ip6_address(netif, &ml->vpn_ipv6, &chosen_idx);
-                if (err == ERR_OK) {
-                    netif_ip6_addr_set_state(netif, chosen_idx, IP6_ADDR_PREFERRED);
-                    char v6_str[48];
-                    ip6addr_ntoa_r(&ml->vpn_ipv6, v6_str, sizeof(v6_str));
-                    ESP_LOGI(TAG, "wg_netif IPv6 configured: %s (idx=%d)", v6_str, chosen_idx);
-                } else {
-                    ESP_LOGW(TAG, "netif_add_ip6_address failed: %d", err);
-                }
+    if (!ip6_addr_isany(&ml->vpn_ipv6)) {
+        s8_t match = netif_get_ip6_addr_match(netif, &ml->vpn_ipv6);
+        if (match < 0) {
+            s8_t chosen_idx = 0;
+            err_t err = netif_add_ip6_address(netif, &ml->vpn_ipv6, &chosen_idx);
+            if (err == ERR_OK && chosen_idx >= 0) {
+                netif_ip6_addr_set_state(netif, chosen_idx, IP6_ADDR_PREFERRED);
+                char v6_str[48];
+                ip6addr_ntoa_r(&ml->vpn_ipv6, v6_str, sizeof(v6_str));
+                ESP_LOGI(TAG, "wg_netif IPv6 configured: %s (idx=%d)", v6_str, chosen_idx);
+            } else {
+                ESP_LOGW(TAG, "netif_add_ip6_address failed: %d", err);
             }
         }
-#endif
     }
+#endif
 }
 
 
@@ -463,7 +467,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     ml_peer_t *p = &ml->peers[idx];
     p->vpn_ip = update->vpn_ip;
     p->is_ipv6 = update->is_ipv6;
-    if (update->is_ipv6) {
+    p->has_ipv6 = update->has_ipv6;
+    if (update->is_ipv6 || update->has_ipv6) {
         memcpy(&p->vpn_ipv6, &update->vpn_ipv6, sizeof(ip6_addr_t));
     }
     memcpy(p->public_key, update->public_key, 32);
@@ -549,7 +554,11 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             wg_peer.endport_port = 0;
         }
 
-        wg_peer.keep_alive = p->is_ipv6 ? 0 : 25;
+        
+
+
+
+        wg_peer.keep_alive = 25;
 
         u8_t wg_peer_idx = WIREGUARDIF_INVALID_INDEX;
         err_t wg_err = wireguardif_add_peer(netif, &wg_peer, &wg_peer_idx);
@@ -933,6 +942,15 @@ static void process_disco_ping(microlink_t *ml, const ml_rx_packet_t *pkt,
                      (int)((pkt->src_ip >> 24) & 0xFF), (int)((pkt->src_ip >> 16) & 0xFF),
                      (int)((pkt->src_ip >> 8) & 0xFF), (int)(pkt->src_ip & 0xFF),
                      pkt->src_port, p->hostname);
+
+            ip_addr_t cur_ip;
+            u16_t cur_port;
+            err_t is_up = wireguardif_peer_is_up((struct netif *)ml->wg_netif,
+                                                 (u8_t)p->wg_peer_index, &cur_ip, &cur_port);
+            if (is_up != ERR_OK) {
+                wireguardif_connect((struct netif *)ml->wg_netif, (u8_t)p->wg_peer_index);
+                ESP_LOGI(TAG, "WG one-shot handshake to %s (from PING)", p->hostname);
+            }
         }
     }
 
@@ -1242,6 +1260,15 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
              (int)pkt->len, pkt->via_derp,
              pkt->len >= 4 ? pkt->data[0] : -1,
              pkt->src_pubkey[0], pkt->src_pubkey[1], pkt->src_pubkey[2], pkt->src_pubkey[3]);
+
+    
+    for (int i = 0; i < ml->peer_count; i++) {
+        if (memcmp(ml->peers[i].public_key, pkt->src_pubkey, 32) == 0) {
+            ml->peers[i].last_ingress_rx_ms = ml_get_time_ms();
+            break;
+        }
+    }
+
     if (!ml->wg_netif) {
         free(pkt->data);
         return;
@@ -1636,6 +1663,7 @@ void ml_wg_mgr_task(void *arg) {
     while (!(xEventGroupGetBits(ml->events) & ML_EVT_SHUTDOWN_REQUEST)) {
         
         process_peer_updates(ml);
+        wg_update_vpn_ip(ml);
 
         
 
@@ -1711,6 +1739,37 @@ void ml_wg_mgr_task(void *arg) {
         uint64_t now = ml_get_time_ms();
         if (ml->wg_netif && now - last_wg_periodic_ms >= 400) {
             uint64_t t0 = now;
+            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            for (int i = 0; i < ml->peer_count; i++) {
+                ml_peer_t *pp = &ml->peers[i];
+                if (pp->wg_peer_index < 0) continue;
+                if (!pp->is_ipv6 && strncmp(pp->hostname, "ingress-", 8) != 0) continue;
+                if (pp->last_ingress_rx_ms == 0 || (now - pp->last_ingress_rx_ms > 120000)) continue;
+                if (now - pp->last_derp_renew_ms < 15000) continue;
+                if (wireguardif_peer_is_up((struct netif *)ml->wg_netif,
+                                           (u8_t)pp->wg_peer_index, NULL, NULL) == ERR_OK) {
+                    continue;
+                }
+                pp->last_derp_renew_ms = now;
+                wireguardif_connect_derp((struct netif *)ml->wg_netif,
+                                         (u8_t)pp->wg_peer_index);
+                ESP_LOGI(TAG, "renovando sesion WG por DERP con edge activo %s (idx %d)",
+                         pp->hostname, (int)pp->wg_peer_index);
+            }
             wireguardif_periodic((struct netif *)ml->wg_netif);
             uint64_t dt = ml_get_time_ms() - t0;
             last_wg_periodic_ms = now;

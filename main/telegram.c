@@ -29,6 +29,7 @@
 #include "microlink_watchdog.h"
 #include "power_off.h"
 #include "power_off_logic.h"
+#include "power_event.h"
 #include "version.h"
 #include "system_health.h"
 #include <esp_psram.h>
@@ -282,6 +283,9 @@ static void handle_reboot_cmd(int64_t chat_id, const char *args) {
 
 static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, const char *args) {
     if (cmd_len == 4 && strncmp(cmd, "wake", 4) == 0) {
+        // Si habia un apagado en segundo plano (S3 -> S0 -> S5), cancelarlo de inmediato:
+        // el usuario pidio explicitamente despertar la maquina.
+        power_off_cancel();
         // El supervisor de wake.c reintenta solo cada 10 s hasta 4 min: un
         // unico magic packet se pierde con facilidad (y tras un corte de luz
         // era justo lo que dejaba el negocio caido sin aviso).
@@ -294,11 +298,16 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
             telegram_send_text(chat_id, "ERR: no se pudo enviar el magic packet.");
         }
     } else if (cmd_len == 6 && strncmp(cmd, "status", 6) == 0) {
-        // /status responde rápido (sin TCP bloqueante) usando el cache
-        // que mantiene state_poll_task. El TCP en vivo está disponible
-        // vía /ping. Aquí solo lectura de variables volatiles + un par
-        // de heap_caps_get_free_size (O(num_bloques_heap)) = microsegundos.
         server_state_t st = state_get();
+        bool shutting_down = state_is_shutdown_in_progress();
+        // Verificacion rapida en vivo (300 ms): si TCP responde, el servidor esta
+        // ON indiscutiblemente. Si el cache decia OFF o SUSPEND (p.ej. tras un poll stale),
+        // se corrige de inmediato salvo que estemos en medio de un apagado en curso.
+        bool alive_now = server_tcp_alive(300);
+        if (alive_now && st != SERVER_STATE_ON && !shutting_down) {
+            state_set(SERVER_STATE_ON);
+            st = SERVER_STATE_ON;
+        }
         uint32_t in_ms = state_entered_at_ms();
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         uint32_t elapsed = (in_ms > 0) ? (now_ms - in_ms) : 0;
@@ -316,7 +325,7 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
             case SERVER_STATE_OFF:     icon = "OFF";     break;
             default: break;
         }
-        bool alive_recent = state_last_poll_tcp_alive();
+        bool alive_recent = alive_now || state_last_poll_tcp_alive();
         size_t heap_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         size_t heap_internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
         size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -336,17 +345,18 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
         } else {
             snprintf(age_str, sizeof(age_str), "%lum", (unsigned long)mins);
         }
+        const char *po_note = shutting_down ? " [apagando...]" : (power_off_is_running() ? " [apagando...]" : "");
         char buf[512];
-        if (up_s != 0) {
+        if (up_s != 0 && st == SERVER_STATE_ON) {
             uint32_t up_h = up_s / 3600;
             uint32_t up_m = (up_s % 3600) / 60;
             snprintf(buf, sizeof(buf),
                      "%s\n"
-                     "IP: %s  State: %s (%s)\n"
+                     "IP: %s  State: %s (%s)%s\n"
                      "Uptime: %luh %lum  TCP/22: %s (poll %s)\n"
                      "Heap: %u free / %u min-ever  PSRAM: %u KB",
                      FIRMWARE_VERSION,
-                     CONFIG_SERVER_IP, icon, age_str,
+                     CONFIG_SERVER_IP, icon, age_str, po_note,
                      (unsigned long)up_h, (unsigned long)up_m,
                      alive_recent ? "UP" : "DOWN", poll_str,
                      (unsigned)heap_internal, (unsigned)heap_internal_min,
@@ -354,11 +364,11 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
         } else {
             snprintf(buf, sizeof(buf),
                      "%s\n"
-                     "IP: %s  State: %s (%s)\n"
+                     "IP: %s  State: %s (%s)%s\n"
                      "TCP/22: %s (poll %s)\n"
                      "Heap: %u free / %u min-ever  PSRAM: %u KB",
                      FIRMWARE_VERSION,
-                     CONFIG_SERVER_IP, icon, age_str,
+                     CONFIG_SERVER_IP, icon, age_str, po_note,
                      alive_recent ? "UP" : "DOWN", poll_str,
                      (unsigned)heap_internal, (unsigned)heap_internal_min,
                      (unsigned)(psram_free / 1024));
@@ -476,39 +486,28 @@ static void handle_command(int64_t chat_id, const char *cmd, size_t cmd_len, con
     //     el limite de latido de 90 s del supervisor de salud: el ESP32 se
     //     reiniciaba en mitad del apagado y el bot quedaba mudo.
     //
-    // Si hay rastro de que esta en S3, la secuencia va en background (tarda
-    // hasta ~90 s en despertar) para que el bot siga respondiendo.
-    bool alive = server_tcp_alive(1200);
-    if (power_off_decide(alive, state_suspect_suspended()) ==
-        POWER_OFF_DECISION_WAKE_THEN_OFF) {
-        esp_err_t aerr = power_off_start_async("telegram /off", chat_id);
-        if (aerr != ESP_OK) {
-            telegram_send_text(chat_id, "ERR: no se pudo iniciar la secuencia de apagado (ya hay una en curso?).");
-            return;
-        }
+    // Y un tercer defecto (2026-10-30): el camino directo contestaba
+    // "OK: server shutdown sent." en cuanto el daemon aceptaba el POST,
+    // SIN comprobar nada. El equipo se quedaba encendido (el apagado real del
+    // servidor tardaba ~100 s) y el usuario se quedaba sin saber si hacia
+    // falta mandar /off otra vez.
+    //
+    // Ahora SIEMPRE va por la secuencia asincrona y verificada: se avisa al
+    // principio y se informa del resultado real (con los segundos que tardo).
+    if (power_off_is_running()) {
         telegram_send_text(chat_id,
-            "server no responde (esta en S3). Lo despierto y lo apago; "
-            "te aviso en cuanto termine.");
+            "El apagado ya esta en curso. Te aviso en cuanto termine.");
         return;
     }
-
-    // Camino rapido: el servidor responde (o ya esta apagado de verdad).
-    power_off_report_t rep;
-    power_off_run("telegram /off", HEALTH_CHANNEL_TELEGRAM, &rep);
-    switch (rep.result) {
-        case POWER_OFF_RESULT_OK:
-            telegram_send_text(chat_id, "OK: server shutdown sent.");
-            break;
-        case POWER_OFF_RESULT_ALREADY_OFF:
-            telegram_send_text(chat_id,
-                "OK: server no responde y no hay rastro de suspension: ya esta apagado.");
-            break;
-        default:
-            telegram_send_text(chat_id,
-                "ERR: no se pudo confirmar el apagado. El daemon de server "
-                "puede no estar corriendo (puerto 9999).");
-            break;
+    esp_err_t aerr = power_off_start_async("telegram /off", chat_id);
+    if (aerr != ESP_OK) {
+        telegram_send_text(chat_id,
+            "ERR: no se pudo iniciar la secuencia de apagado.");
+        return;
     }
+    telegram_send_text(chat_id,
+        "Apagando server... te aviso en cuanto se confirme "
+        "(el corte de corriente puede tardar ~30 s).");
     } else if (cmd_len == 7 && strncmp(cmd, "suspend", 7) == 0) {
         if (!server_tcp_alive(1200)) {
             telegram_send_text(chat_id, "ERR: server not reachable. /suspend requires the host to be ON.");

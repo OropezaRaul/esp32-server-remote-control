@@ -94,8 +94,8 @@ extern "C" {
 #define ML_DERP_MAX_FRAME       (ML_MAX_PACKET_SIZE + 64)
 
 
-#define ML_DERP_REGION          9       
-#define ML_DERP_HOST            "derp9e.tailscale.com"
+#define ML_DERP_REGION          16      
+#define ML_DERP_HOST            "derp16b.tailscale.com"
 #define ML_DERP_PORT            443
 
 
@@ -112,7 +112,7 @@ extern "C" {
 #define ML_DISCO_SESSION_ACTIVE_MS      45000
 
 
-#define ML_STUN_PRIMARY_HOST    "derp9.tailscale.com"
+#define ML_STUN_PRIMARY_HOST    "derp16.tailscale.com"
 #define ML_STUN_PRIMARY_PORT    3478
 #define ML_STUN_FALLBACK_HOST   "stun.l.google.com"
 #define ML_STUN_FALLBACK_PORT   19302
@@ -297,6 +297,14 @@ typedef struct {
 
     
     bool tried_initial_handshake;
+
+    
+
+    uint64_t last_derp_renew_ms;
+
+    
+
+    uint64_t last_ingress_rx_ms;
 } ml_peer_t;
 
 
@@ -363,6 +371,17 @@ typedef struct {
 struct microlink_s {
     
     microlink_config_t config;
+
+    
+
+
+
+
+
+
+
+
+    volatile bool funnel_active;
 
     
     volatile microlink_state_t state;

@@ -15,3 +15,4 @@ extern EventGroupHandle_t wifi_event_group;
 esp_err_t wifi_init_sta(void);
 bool wifi_is_connected(void);
 esp_ip4_addr_t wifi_get_ip(void);
+void wifi_deinit_for_restart(void);

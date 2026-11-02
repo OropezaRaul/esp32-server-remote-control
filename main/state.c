@@ -19,6 +19,7 @@
 #include "system_health.h"
 
 #include "sdkconfig.h"
+#include "sockmgr.h"
 
 #define NVS_NAMESPACE_STATE   "server"
 #define NVS_KEY_BOOT_TIME     "boot_time"
@@ -261,6 +262,8 @@ server_state_t state_get(void) { return g_state; }
 uint32_t state_entered_at_ms(void) { return g_state_entered_ms; }
 uint32_t state_last_known_on_ms(void) { return g_last_known_on_ms; }
 
+static volatile uint32_t s_shutdown_sent_ms = 0;
+
 void state_set(server_state_t s) {
     if (s == g_state) return;
     // Una vez OFF, solo ON puede sacarnos de ahí. Esto evita que el poll
@@ -279,6 +282,7 @@ void state_set(server_state_t s) {
     g_state_entered_ms = now;
     if (s == SERVER_STATE_ON) {
         g_last_known_on_ms = now;
+        s_shutdown_sent_ms = 0;
     } else if (s == SERVER_STATE_OFF) {
         // Al apagar explícitamente a OFF (o por /off), reseteamos
         // g_last_known_on_ms para que la heurística de query_state
@@ -361,7 +365,10 @@ static int server_http_get_body(char *buf, int buf_size) {
     if (buf == NULL || buf_size <= 16) return -1;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return -1;
+    if (sock < 0) {
+        if (errno == ENFILE) sockmgr_note_enfile();
+        return -1;
+    }
 
     // O_NONBLOCK para que connect() retorne EINPROGRESS inmediatamente.
     int flags = fcntl(sock, F_GETFL, 0);
@@ -431,19 +438,31 @@ static int server_http_get_body(char *buf, int buf_size) {
         sent += n;
     }
 
-    // Leer hasta encontrar fin de headers (\r\n\r\n) o agotar el buffer.
+    // Leer hasta encontrar fin de headers (\r\n\r\n) y luego el body completo.
     int total = 0;
     int header_end = -1;
+    int content_len = -1;
     while (total < buf_size - 1) {
         int n = recv(sock, buf + total, buf_size - 1 - total, 0);
         if (n < 0) { close(sock); return -1; }
         if (n == 0) break;
         total += n;
         buf[total] = 0;
-        char *p = strstr(buf, "\r\n\r\n");
-        if (p != NULL) {
-            header_end = (p - buf) + 4;
-            break;
+        if (header_end < 0) {
+            char *p = strstr(buf, "\r\n\r\n");
+            if (p != NULL) {
+                header_end = (int)((p - buf) + 4);
+                char *cl = strstr(buf, "Content-Length:");
+                if (!cl) cl = strstr(buf, "content-length:");
+                if (cl != NULL) {
+                    content_len = atoi(cl + 15);
+                }
+            }
+        }
+        if (header_end >= 0) {
+            if (content_len >= 0 && (total - header_end) >= content_len) {
+                break;
+            }
         }
     }
     close(sock);
@@ -465,7 +484,11 @@ static int server_http_get_body(char *buf, int buf_size) {
 static void refresh_boot_time(void) {
     char buf[512];
     s_state_http_attempts++;
+    
+
+    if (!sockmgr_take(2000)) return;
     int body_len = server_http_get_body(buf, sizeof(buf));
+    sockmgr_give();
     s_state_http_last_len = body_len;
     if (body_len <= 0) {
         s_state_http_err++;
@@ -516,7 +539,14 @@ static const char *query_http_state(void) {
     result_buf[0] = 0;
 
     char buf[512];
+    
+
+    if (!sockmgr_take(2000)) {
+        strncpy(result_buf, "TIMEOUT", sizeof(result_buf) - 1);
+        return result_buf;
+    }
     int body_len = server_http_get_body(buf, sizeof(buf));
+    sockmgr_give();
     if (body_len < 0) {
         // connect falló o timeout o status != 200
         ESP_LOGD(TAG, "[STATE] HTTP get failed (no body, treating as TIMEOUT)");
@@ -575,7 +605,7 @@ static const char *query_http_state(void) {
 // y la heuristica LAST_ON_HEURISTIC_MS decide OFF vs SUSPEND.
 static server_state_t query_state(void) {
     g_last_poll_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (server_tcp_alive(400)) {
+    if (server_tcp_alive(800)) {
         g_last_poll_tcp_alive = true;
         // IMPORTANTE: refrescar "lo vi vivo" en CADA poll, no solo cuando cambia
         // el estado. Antes g_last_known_on_ms solo se actualizaba en las
@@ -633,6 +663,20 @@ void state_trigger_fast_poll(void) {
 bool state_is_fast_polling(void) {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     return (now < s_fast_poll_until_ms) && (g_state != SERVER_STATE_ON);
+}
+
+void state_note_shutdown_sent(void) {
+    s_shutdown_sent_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+bool state_is_shutdown_in_progress(void) {
+    if (s_shutdown_sent_ms == 0) return false;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if ((uint32_t)(now - s_shutdown_sent_ms) < 60000UL && g_state != SERVER_STATE_ON) {
+        return true;
+    }
+    s_shutdown_sent_ms = 0;
+    return false;
 }
 
 void state_poll_task(void *arg) {

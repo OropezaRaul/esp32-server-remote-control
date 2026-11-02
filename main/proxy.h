@@ -28,7 +28,7 @@
 #define PROXY_WAKE_TIMEOUT_MS   90000
 #define PROXY_WAKE_POLL_MS      2000
 #define PROXY_LISTEN_BACKLOG    4
-#define PROXY_TASK_STACK        16384
+#define PROXY_TASK_STACK        4096
 #define PROXY_TASK_PRIO         5
 #define PROXY_LIS_TASK_STACK    8192
 #define PROXY_LIS_TASK_PRIO     6

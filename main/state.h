@@ -85,3 +85,7 @@ void state_clear_suspect_suspended(void);
 // el servidor esté listo.
 void state_trigger_fast_poll(void);
 bool state_is_fast_polling(void);
+
+// Indica que se envio una orden de apagado (POST /off) recientemente.
+void state_note_shutdown_sent(void);
+bool state_is_shutdown_in_progress(void);

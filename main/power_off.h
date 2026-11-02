@@ -65,5 +65,12 @@ esp_err_t power_off_start_async(const char *reason, int64_t chat_id);
 // (el daemon suspende/apaga la maquina ANTES de responder).
 bool power_off_wait_until_down(uint32_t timeout_ms, health_channel_t hb);
 
+// Dice si hay una secuencia asincrona de apagado corriendo en segundo plano.
+bool power_off_is_running(void);
+
+// Solicita la cancelacion de una secuencia de apagado en curso (ej. si el
+// usuario envia /wake mientras esperabamos que S3 despertara para apagarlo).
+void power_off_cancel(void);
+
 // Estado legible de la ultima secuencia (para /diag).
 void power_off_status_str(char *out, size_t out_size);
