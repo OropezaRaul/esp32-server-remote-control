@@ -13,6 +13,7 @@
 #include "ml_cert.h"
 #include "telegram.h"
 #include "wifi.h"
+#include "auto_reboot.h"
 #include "sdkconfig.h"
 #include "sockmgr.h"
 
@@ -28,6 +29,9 @@ static const char *TAG = "funnel_ctl";
 #endif
 #ifndef CONFIG_FUNNEL_REPAIR_ENABLED
 #define CONFIG_FUNNEL_REPAIR_ENABLED 1
+#endif
+#ifndef CONFIG_FUNNEL_REBOOT_ON_FAIL
+#define CONFIG_FUNNEL_REBOOT_ON_FAIL 1
 #endif
 
 
@@ -145,7 +149,6 @@ bool funnel_ctl_check_now(char *detail, size_t detail_len) {
     bool present = false;
     size_t cert_len = 0, key_len = 0;
     if (ml_cert_info(&present, &cert_len, &key_len) != ESP_OK || !present) {
-        sockmgr_give();
         snprintf(detail, detail_len, "sin cert TLS en NVS: no se puede verificar");
         return false;
     }
@@ -244,8 +247,22 @@ static void funnel_task(void *arg) {
                        "https://<nodo>.tailnet.ts.net vuelve a funcionar.");
             } else {
                 snprintf(s_st.last_error, sizeof(s_st.last_error), "%s", detail2);
-                notify("Funnel publico SIGUE CAIDO tras la reparacion "
-                       "(revisa el cert TLS y la red).");
+#if CONFIG_FUNNEL_REBOOT_ON_FAIL
+                if (s_st.ever_ok && wifi_is_connected() && now_ms() > 180000) {
+                    char rb_msg[256];
+                    snprintf(rb_msg, sizeof(rb_msg),
+                             "Funnel publico SIGUE CAIDO tras refresh (%s).\n"
+                             "Reiniciando ESP32 automaticamente para restablecer la sesion en Tailscale...",
+                             detail2);
+                    notify(rb_msg);
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    auto_reboot_trigger("funnel manual refresh failed", 0);
+                } else
+#endif
+                {
+                    notify("Funnel publico SIGUE CAIDO tras la reparacion "
+                           "(revisa el cert TLS y la red).");
+                }
             }
             continue;
         }
@@ -315,15 +332,34 @@ static void funnel_task(void *arg) {
                                "https://<nodo>.tailnet.ts.net vuelve a funcionar.");
                     } else {
                         snprintf(s_st.last_error, sizeof(s_st.last_error), "%s", detail2);
-                        notify("Funnel publico SIGUE CAIDO tras la reparacion "
-                               "(revisa el cert TLS y la red).");
+#if CONFIG_FUNNEL_REBOOT_ON_FAIL
+                        if (wifi_is_connected() && now_ms() > 180000) {
+                            char rb_msg[256];
+                            snprintf(rb_msg, sizeof(rb_msg),
+                                     "Funnel publico SIGUE CAIDO tras la reparacion (%s).\n"
+                                     "Reiniciando ESP32 automaticamente para restablecer la sesion en Tailscale...",
+                                     detail2);
+                            notify(rb_msg);
+                            vTaskDelay(pdMS_TO_TICKS(1500));
+                            auto_reboot_trigger("funnel repair failed", 0);
+                        } else
+#endif
+                        {
+                            notify("Funnel publico SIGUE CAIDO tras la reparacion "
+                                   "(revisa el cert TLS y la red).");
+                        }
                     }
                 }
             }
         }
 
         
-        for (int i = 0; i < CONFIG_FUNNEL_CHECK_INTERVAL_MIN * 60; i++) {
+        uint32_t sleep_s = (s_st.consecutive_failures > 0 && s_st.consecutive_failures < FUNNEL_FAILS_BEFORE_REPAIR)
+                         ? 30
+                         : ((uint32_t)CONFIG_FUNNEL_CHECK_INTERVAL_MIN * 60);
+
+        for (uint32_t i = 0; i < sleep_s; i++) {
+            if (s_refresh_requested) break;
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }

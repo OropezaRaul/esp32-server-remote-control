@@ -223,6 +223,16 @@ menu "ESP32 Remote Control"
                 mapeo del edge, que es lo que queda obsoleto y deja el
                 funnel muerto (el cliente ve EOF en el TLS).
 
+        config FUNNEL_REBOOT_ON_FAIL
+            bool "Reiniciar el ESP32 si el Funnel sigue caido tras re-anunciar"
+            default y
+            depends on FUNNEL_REPAIR_ENABLED
+            help
+                Si el ciclo de re-anuncio off->on falla en restablecer el
+                camino publico del edge (por sesion stale en control plane o
+                exhaustion de sockets), reinicia el ESP32 de forma segura
+                para forzar un re-registro completo y limpio.
+
         config FUNNEL_PUBLIC_IPS
             string "IPs publicas del edge de Funnel (separadas por coma)"
             default "209.177.145.97,209.177.145.192"

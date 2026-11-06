@@ -1335,9 +1335,10 @@ esp_err_t web_server_funnel_tls_start(void) {
     httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
     cfg.httpd.server_port = 443;
     cfg.httpd.ctrl_port += 1;  // diferente de :80 para evitar colisión
-    // Ver el comentario del :80: la tabla de sockets de lwIP (16) es el
-    // recurso escaso del ESP32.
-    cfg.httpd.max_open_sockets = 1;
+    // Sockets en :443: 2 sockets permiten atender peticiones concurrentes
+    // (p.ej. el health check mientras un cliente navega, o HTML + favicon)
+    // evitando caídas por ERR_SOCKET_NOT_CONNECTED (bug F2).
+    cfg.httpd.max_open_sockets = 2;
     cfg.httpd.recv_wait_timeout = 3;
     cfg.httpd.send_wait_timeout = 3;
     cfg.httpd.lru_purge_enable = true;

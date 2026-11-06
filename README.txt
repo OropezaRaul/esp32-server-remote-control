@@ -433,6 +433,22 @@ if __name__ == "__main__":
 ------------------------------------------------------------------------------
 8. PUBLIC RELEASE CHANGELOG
 ------------------------------------------------------------------------------
+v1.8.9 - Funnel Auto-Recovery & Ingress Edge Persistence (2026-11-05)
+--------------------------------------------
+- Automatic reboot escalation on Funnel failure: when the public gateway check
+  fails and the soft off->on re-announcement cycle cannot restore the mapping,
+  the ESP32 automatically performs a safe restart to re-register a clean
+  session with the Tailscale control plane.
+- Accelerated failure verification: consecutive failure confirmation dropped
+  from 30 minutes to 30 seconds, reducing total recovery time from ~60 min
+  to ~2 min.
+- Edge Ingress WireGuard persistence: home DERP region edge peers now maintain
+  active WireGuard sessions over DERP, preventing sessions from expiring after
+  120 s of idle time (ESP_ERR_HTTP_CONNECT / EOF errors).
+- TLS concurrency support: :443 max_open_sockets increased from 1 to 2,
+  preventing browser connection drops (bug F2).
+- Fixed sockmgr_give accounting bug in funnel_ctl.
+
 v1.8.8 - Verified power-off & Funnel socket resilience (2026-10-29)
 --------------------------------------------
 - Verified shutdown sequence: Telegram and serial /off commands now execute

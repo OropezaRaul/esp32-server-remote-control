@@ -1758,7 +1758,15 @@ void ml_wg_mgr_task(void *arg) {
                 ml_peer_t *pp = &ml->peers[i];
                 if (pp->wg_peer_index < 0) continue;
                 if (!pp->is_ipv6 && strncmp(pp->hostname, "ingress-", 8) != 0) continue;
-                if (pp->last_ingress_rx_ms == 0 || (now - pp->last_ingress_rx_ms > 120000)) continue;
+
+                
+
+
+
+                bool is_home_ingress = (pp->derp_region > 0 && pp->derp_region == ml->derp_home_region);
+                bool is_recent_active = (pp->last_ingress_rx_ms > 0 && (now - pp->last_ingress_rx_ms <= 300000));
+                if (!is_home_ingress && !is_recent_active) continue;
+
                 if (now - pp->last_derp_renew_ms < 15000) continue;
                 if (wireguardif_peer_is_up((struct netif *)ml->wg_netif,
                                            (u8_t)pp->wg_peer_index, NULL, NULL) == ERR_OK) {
@@ -1767,8 +1775,8 @@ void ml_wg_mgr_task(void *arg) {
                 pp->last_derp_renew_ms = now;
                 wireguardif_connect_derp((struct netif *)ml->wg_netif,
                                          (u8_t)pp->wg_peer_index);
-                ESP_LOGI(TAG, "renovando sesion WG por DERP con edge activo %s (idx %d)",
-                         pp->hostname, (int)pp->wg_peer_index);
+                ESP_LOGI(TAG, "renovando sesion WG por DERP con edge %s (idx %d, derp=%u)",
+                         pp->hostname, (int)pp->wg_peer_index, (unsigned)pp->derp_region);
             }
             wireguardif_periodic((struct netif *)ml->wg_netif);
             uint64_t dt = ml_get_time_ms() - t0;
