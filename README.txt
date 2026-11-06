@@ -433,6 +433,25 @@ if __name__ == "__main__":
 ------------------------------------------------------------------------------
 8. PUBLIC RELEASE CHANGELOG
 ------------------------------------------------------------------------------
+v1.9.0 - Wake-on-LAN Unblock & Inactivity Automation Hardening (2026-11-05)
+--------------------------------------------
+- Resolved Wake-on-LAN starvation: transient socket budget increased from 1 to 2
+  to prevent background state polling (query_http_state) from blocking wol_send,
+  which previously caused "sin red" errors (19 consecutive failures) and prevented
+  waking from S5/S3 on client access.
+- WOL non-blocking priority: wol_send attempts to acquire a transient socket slot
+  up to 2 s, but if slots are busy it sends the UDP broadcast datagram anyway,
+  guaranteeing the magic packet always leaves the ESP32.
+- Wake retry logic correction: wol_send failures no longer count as sent attempts
+  with a 10-second penalty; failed transmissions are retried on the immediate next tick.
+- Fast poll notification dampening: state_trigger_fast_poll avoids flooding
+  state_poll_task with notifications if fast polling is already active, restoring
+  proper 2.5 s intervals.
+- Automation suspend confirmation: /autoset auto-suspend now falls back to probe
+  verification if the HTTP response is lost upon ACPI S3 entry (same as Telegram).
+- Server-side ready notify cadence: steady poll interval set to 60 s to prevent
+  synthetic traffic from keeping the kernel activity counter continuously active.
+
 v1.8.9 - Funnel Auto-Recovery & Ingress Edge Persistence (2026-11-05)
 --------------------------------------------
 - Automatic reboot escalation on Funnel failure: when the public gateway check

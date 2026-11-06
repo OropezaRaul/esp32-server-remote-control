@@ -654,8 +654,9 @@ static volatile uint32_t s_fast_poll_until_ms = 0;
 
 void state_trigger_fast_poll(void) {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    bool already_fast = (now < s_fast_poll_until_ms);
     s_fast_poll_until_ms = now + (60UL * 1000UL); // 60 segundos de fast poll
-    if (s_state_task != NULL) {
+    if (!already_fast && s_state_task != NULL) {
         xTaskNotifyGive(s_state_task);
     }
 }

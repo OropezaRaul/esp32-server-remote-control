@@ -74,12 +74,15 @@ esp_err_t wol_send(const uint8_t mac[6]) {
 
     
 
-    if (!sockmgr_take(1000)) return ESP_FAIL;
+
+
+
+    bool took = sockmgr_take(2000);
 
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         if (errno == ENFILE) sockmgr_note_enfile();
-        sockmgr_give();
+        if (took) sockmgr_give();
         ESP_LOGE(TAG, "socket() failed: errno %d", errno);
         return ESP_FAIL;
     }
@@ -140,7 +143,7 @@ esp_err_t wol_send(const uint8_t mac[6]) {
     }
 
     close(sock);
-    sockmgr_give();
+    if (took) sockmgr_give();
 
     if (sent_ok == 0) {
         ESP_LOGE(TAG, "WOL burst FAILED: 0/%d datagrams left the ESP32 (errno %d). "

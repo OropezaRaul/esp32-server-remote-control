@@ -113,14 +113,8 @@ static void wake_task(void *arg) {
         // 3) Toca reintentar.
         if (wake_logic_due_send(&s_wake, now, WAKE_RETRY_MS)) {
             esp_err_t err = wol_send_default();
-            wake_logic_record_send(&s_wake, now);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "wake: rafaga %u no pudo enviar (%s); se reintenta",
-                         (unsigned)s_wake.attempts, esp_err_to_name(err));
-                set_status_text("wake: PENDIENTE (%s) intentos=%u sin red",
-                                s_wake.reason[0] ? s_wake.reason : "wake",
-                                (unsigned)s_wake.attempts);
-            } else {
+            if (err == ESP_OK) {
+                wake_logic_record_send(&s_wake, now);
                 ESP_LOGI(TAG, "wake: rafaga %u enviada (%s)",
                          (unsigned)s_wake.attempts,
                          s_wake.reason[0] ? s_wake.reason : "wake");
@@ -128,6 +122,12 @@ static void wake_task(void *arg) {
                                 s_wake.reason[0] ? s_wake.reason : "wake",
                                 (unsigned)s_wake.attempts,
                                 (unsigned)((now - s_wake.armed_ms) / 1000));
+            } else {
+                ESP_LOGW(TAG, "wake: rafaga no pudo enviar (%s); se reintenta",
+                         esp_err_to_name(err));
+                set_status_text("wake: PENDIENTE (%s) intentos=%u sin red",
+                                s_wake.reason[0] ? s_wake.reason : "wake",
+                                (unsigned)s_wake.attempts);
             }
         }
     }

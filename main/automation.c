@@ -492,6 +492,20 @@ static void automation_task(void *arg) {
                                         + (uint32_t)g_cfg.off_after_min * 60U;
                     cycle_persist();
                 }
+            } else if (power_off_wait_until_down(6000, HEALTH_CHANNEL_AUTOMATION)) {
+                // Al igual que en telegram.c: el daemon suspende la maquina ANTES
+                // de responder, asi que la respuesta HTTP se pierde casi siempre.
+                // Si :22 deja de responder, el suspend funciono: se confirma por sonda.
+                ESP_LOGI(TAG, "ACTION: /suspend confirmado por sonda (:22 caido), state -> SUSPEND");
+                state_set(SERVER_STATE_SUSPEND);
+                g_last_interaction_ms = now_ms;
+                g_last_in_quiet = false;
+                if (g_cfg.off_after_min > 0) {
+                    g_off_cycle_active = true;
+                    g_off_deadline_unix = (uint32_t)time(NULL)
+                                        + (uint32_t)g_cfg.off_after_min * 60U;
+                    cycle_persist();
+                }
             } else {
                 ESP_LOGW(TAG, "ACTION: /suspend failed (%s), will retry next cycle",
                          esp_err_to_name(sres));
